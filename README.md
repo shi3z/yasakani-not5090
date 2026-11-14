@@ -1,10 +1,13 @@
-# YASAKANI on NVIDIA RTX A6000 (Linux)
+# YASAKANI — not only the RTX 5090 (Linux port)
 
-Unofficial **Linux / sm_86** port of [YASAKANI](https://github.com/yasakani-dev/yasakani)
-(Apache-2.0), built from source and run on a single **NVIDIA RTX A6000 (48 GB)**.
-The upstream release targets Windows 11 and the RTX 5090 only; this fork makes the
-same engine build and run on Ampere. It is not affiliated with or endorsed by the
-upstream YASAKANI authors. See [Changes from upstream](#changes-from-upstream-a6000-port).
+Unofficial **Linux port** of [YASAKANI](https://github.com/yasakani-dev/yasakani)
+(Apache-2.0), built from source to run on NVIDIA cards **other than the RTX 5090**.
+The upstream release targets Windows 11 and the RTX 5090 (sm_120) only; this fork makes
+the same engine build and run on earlier NVIDIA GPUs, starting with **Ampere (sm_86)**.
+Measured here on a single **NVIDIA RTX A6000 (48 GB)**. Other cards need only a different
+`-DCMAKE_CUDA_ARCHITECTURES` (e.g. 89 for RTX 40, 75 for RTX 20). Not affiliated with or
+endorsed by the upstream YASAKANI authors. See
+[Changes from upstream](#changes-from-upstream-a6000-port).
 
 ## Benchmark on an RTX A6000
 
@@ -25,6 +28,22 @@ to within 1% over 3 runs (thinking off) / 2 runs (thinking on).
 
 Speed varies 2-3x with content because the draft model's acceptance rate does
 (code accepts ~7.9 tokens per forward pass, story ~2.5).
+
+**Edit and JSONL tasks — tokens/s (greedy, thinking off, upstream's own prompts)**
+
+These are upstream's exact `edit_code`, `edit_jsonl` and `jsonl_orders_8k` prompts, so
+they compare directly to upstream's Code edit / JSONL edit / Long JSONL columns. Edit and
+JSONL generation are the fastest tasks: the output largely copies the input, so the draft
+model is accepted ~14-15 tokens per forward pass.
+
+| Prompt (upstream) | A6000 tokens/s | tokens/pass | RTX 5090 (upstream) |
+|---|---:|---:|---:|
+| edit_code (Code edit)        | 375 | 14.1 | 1,136 |
+| edit_jsonl (JSONL edit)      | 380 | 15.1 | 1,151 |
+| jsonl_orders_8k (Long JSONL) | 382 | 15.2 | 1,160 |
+
+At ~380 tok/s these run ~2.8x faster than general prose on the A6000, and reach about a
+third of the RTX 5090 on the same prompts — in line with the memory-bandwidth gap.
 
 **Translation and structured output — tokens/s (greedy, thinking off, 3 runs)**
 
