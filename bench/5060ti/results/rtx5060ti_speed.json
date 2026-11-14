@@ -1,0 +1,386 @@
+{
+ "version": "0.1.1",
+ "weights": "qwen38_27b_speed.yskn",
+ "gpu": "NVIDIA GeForce RTX 5060 Ti, 16311 MiB, 15446 MiB, 595.99.02",
+ "max_ctx": 65536,
+ "load_s": 3.9,
+ "lib_sha256": "18d7ccc541c7040f61c87f2ed07efa877e4456454590b842e0b60f0a3b68abb2",
+ "sections": {
+  "general": [
+   {
+    "prompt_tokens": 30,
+    "tokens": 512,
+    "finish": "length",
+    "passes": 122,
+    "prefill_s": 0.11773494999999999,
+    "gen_s": 4.079214771,
+    "ms_per_pass": 33.436186647540985,
+    "tok_per_pass": 4.188524590163935,
+    "tok_s": 125.26920711133108,
+    "sha": "23c50cde6e19",
+    "runs_tok_s": [
+     125.1,
+     125.3
+    ],
+    "task": "explain",
+    "thinking": false
+   },
+   {
+    "prompt_tokens": 28,
+    "tokens": 512,
+    "finish": "length",
+    "passes": 70,
+    "prefill_s": 0.115535748,
+    "gen_s": 2.522282572,
+    "ms_per_pass": 36.03260817142857,
+    "tok_per_pass": 7.3,
+    "tok_s": 202.59427142408214,
+    "sha": "b93b45f8cb82",
+    "runs_tok_s": [
+     201.9,
+     202.6
+    ],
+    "task": "code",
+    "thinking": false
+   },
+   {
+    "prompt_tokens": 29,
+    "tokens": 512,
+    "finish": "length",
+    "passes": 210,
+    "prefill_s": 0.116462676,
+    "gen_s": 6.969005635,
+    "ms_per_pass": 33.18574111904762,
+    "tok_per_pass": 2.433333333333333,
+    "tok_s": 73.32466448780536,
+    "sha": "8ed06bbb7273",
+    "runs_tok_s": [
+     73.3,
+     73.3
+    ],
+    "task": "story",
+    "thinking": false
+   },
+   {
+    "prompt_tokens": 24,
+    "tokens": 512,
+    "finish": "length",
+    "passes": 72,
+    "prefill_s": 0.111909226,
+    "gen_s": 2.623658273,
+    "ms_per_pass": 36.43969823611111,
+    "tok_per_pass": 7.097222222222222,
+    "tok_s": 194.76621832145133,
+    "sha": "977b40693d9e",
+    "runs_tok_s": [
+     194.6,
+     194.8
+    ],
+    "task": "proof",
+    "thinking": false
+   },
+   {
+    "prompt_tokens": 70,
+    "tokens": 512,
+    "finish": "length",
+    "passes": 124,
+    "prefill_s": 0.18753071600000001,
+    "gen_s": 4.143526571000001,
+    "ms_per_pass": 33.41553686290323,
+    "tok_per_pass": 4.120967741935484,
+    "tok_s": 123.32489999615835,
+    "sha": "93ab0bc017bc",
+    "runs_tok_s": [
+     123.3,
+     123.3
+    ],
+    "task": "explain",
+    "thinking": true
+   },
+   {
+    "prompt_tokens": 68,
+    "tokens": 512,
+    "finish": "length",
+    "passes": 109,
+    "prefill_s": 0.147575165,
+    "gen_s": 3.674305711,
+    "ms_per_pass": 33.709226706422015,
+    "tok_per_pass": 4.6880733944954125,
+    "tok_s": 139.07389319026643,
+    "sha": "8b42f79b57b5",
+    "runs_tok_s": [
+     139.1,
+     139.1
+    ],
+    "task": "code",
+    "thinking": true
+   },
+   {
+    "prompt_tokens": 69,
+    "tokens": 512,
+    "finish": "length",
+    "passes": 205,
+    "prefill_s": 0.18238981599999998,
+    "gen_s": 6.819531971,
+    "ms_per_pass": 33.26600961463415,
+    "tok_per_pass": 2.4926829268292683,
+    "tok_s": 74.93182848515455,
+    "sha": "10c88fadab7a",
+    "runs_tok_s": [
+     74.9,
+     74.9
+    ],
+    "task": "story",
+    "thinking": true
+   },
+   {
+    "prompt_tokens": 64,
+    "tokens": 459,
+    "finish": "stop",
+    "passes": 75,
+    "prefill_s": 0.149561535,
+    "gen_s": 2.576781744,
+    "ms_per_pass": 34.35708992,
+    "tok_per_pass": 6.1066666666666665,
+    "tok_s": 177.74109160251797,
+    "sha": "505418c61947",
+    "runs_tok_s": [
+     177.7,
+     177.7
+    ],
+    "task": "proof",
+    "thinking": true
+   }
+  ],
+  "own": [
+   {
+    "prompt_tokens": 4769,
+    "tokens": 4708,
+    "finish": "stop",
+    "passes": 335,
+    "prefill_s": 5.9287113410000005,
+    "gen_s": 13.492540075,
+    "ms_per_pass": 40.27623902985075,
+    "tok_per_pass": 14.050746268656717,
+    "tok_s": 348.85944187199306,
+    "sha": "f33e0ae580bc",
+    "runs_tok_s": [
+     348.9,
+     348.6
+    ],
+    "task": "edit_code",
+    "thinking": false,
+    "exact": true
+   },
+   {
+    "prompt_tokens": 2927,
+    "tokens": 2854,
+    "finish": "stop",
+    "passes": 205,
+    "prefill_s": 3.600616766,
+    "gen_s": 8.696549084,
+    "ms_per_pass": 42.42219065365854,
+    "tok_per_pass": 13.917073170731708,
+    "tok_s": 328.0611622429612,
+    "sha": "2cb41c0afd07",
+    "runs_tok_s": [
+     327.9,
+     328.1
+    ],
+    "task": "edit_jsonl",
+    "thinking": false,
+    "exact": true
+   },
+   {
+    "prompt_tokens": 146,
+    "tokens": 8192,
+    "finish": "length",
+    "passes": 535,
+    "prefill_s": 0.256417025,
+    "gen_s": 22.936147884,
+    "ms_per_pass": 42.87130445607477,
+    "tok_per_pass": 15.310280373831775,
+    "tok_s": 357.12186900024085,
+    "sha": "0fb92b5f1245",
+    "runs_tok_s": [
+     357.1,
+     357.1
+    ],
+    "task": "jsonl_orders_8k",
+    "thinking": false
+   }
+  ],
+  "table13": [
+   {
+    "prompt_tokens": 33,
+    "tokens": 768,
+    "finish": "length",
+    "passes": 767,
+    "prefill_s": 0.117438685,
+    "gen_s": 20.016149357,
+    "ms_per_pass": 26.0966745202086,
+    "tok_per_pass": 1.0,
+    "tok_s": 38.31905859214458,
+    "sha": "cd07b8ec94b9",
+    "runs_tok_s": [
+     38.3,
+     38.3
+    ],
+    "task": "prose",
+    "lookahead": "off",
+    "published_5090": 126
+   },
+   {
+    "prompt_tokens": 33,
+    "tokens": 768,
+    "finish": "length",
+    "passes": 283,
+    "prefill_s": 0.11738995199999999,
+    "gen_s": 9.424538563,
+    "ms_per_pass": 33.30225640636042,
+    "tok_per_pass": 2.7102473498233217,
+    "tok_s": 81.38329477595666,
+    "sha": "cd07b8ec94b9",
+    "runs_tok_s": [
+     81.4,
+     81.4
+    ],
+    "task": "prose",
+    "lookahead": "on",
+    "published_5090": 279
+   },
+   {
+    "prompt_tokens": 71,
+    "tokens": 768,
+    "finish": "length",
+    "passes": 767,
+    "prefill_s": 0.178016648,
+    "gen_s": 20.014572033,
+    "ms_per_pass": 26.094618035202085,
+    "tok_per_pass": 1.0,
+    "tok_s": 38.32207847039504,
+    "sha": "64857ec40fba",
+    "runs_tok_s": [
+     38.3,
+     38.3
+    ],
+    "task": "thinking",
+    "lookahead": "off",
+    "published_5090": 126
+   },
+   {
+    "prompt_tokens": 71,
+    "tokens": 768,
+    "finish": "length",
+    "passes": 264,
+    "prefill_s": 0.17847918100000001,
+    "gen_s": 8.821253738,
+    "ms_per_pass": 33.41383991666667,
+    "tok_per_pass": 2.9053030303030303,
+    "tok_s": 86.94909168023753,
+    "sha": "64857ec40fba",
+    "runs_tok_s": [
+     86.9,
+     86.9
+    ],
+    "task": "thinking",
+    "lookahead": "on",
+    "published_5090": 298
+   },
+   {
+    "prompt_tokens": 24,
+    "tokens": 768,
+    "finish": "length",
+    "passes": 767,
+    "prefill_s": 0.111674565,
+    "gen_s": 20.010547161999998,
+    "ms_per_pass": 26.08937048500652,
+    "tok_per_pass": 1.0,
+    "tok_s": 38.32978647663028,
+    "sha": "0e6f2601cbdf",
+    "runs_tok_s": [
+     38.3,
+     38.3
+    ],
+    "task": "code",
+    "lookahead": "off",
+    "published_5090": 126
+   },
+   {
+    "prompt_tokens": 24,
+    "tokens": 768,
+    "finish": "length",
+    "passes": 178,
+    "prefill_s": 0.112003828,
+    "gen_s": 6.155458158,
+    "ms_per_pass": 34.581225606741576,
+    "tok_per_pass": 4.308988764044944,
+    "tok_s": 124.6048596729004,
+    "sha": "0e6f2601cbdf",
+    "runs_tok_s": [
+     124.6,
+     124.6
+    ],
+    "task": "code",
+    "lookahead": "on",
+    "published_5090": 420
+   },
+   {
+    "prompt_tokens": 1056,
+    "tokens": 768,
+    "finish": "length",
+    "passes": 767,
+    "prefill_s": 1.346709336,
+    "gen_s": 20.115367342000003,
+    "ms_per_pass": 26.22603304041721,
+    "tok_per_pass": 1.0,
+    "tok_s": 38.130051863310385,
+    "sha": "ced4026b5c34",
+    "runs_tok_s": [
+     38.1,
+     38.1
+    ],
+    "task": "csv-to-json",
+    "lookahead": "off",
+    "published_5090": 126
+   },
+   {
+    "prompt_tokens": 1056,
+    "tokens": 768,
+    "finish": "length",
+    "passes": 51,
+    "prefill_s": 1.343045009,
+    "gen_s": 2.1175139869999997,
+    "ms_per_pass": 41.51988209803921,
+    "tok_per_pass": 15.03921568627451,
+    "tok_s": 362.21720598249823,
+    "sha": "ced4026b5c34",
+    "runs_tok_s": [
+     362.2,
+     362.2
+    ],
+    "task": "csv-to-json",
+    "lookahead": "on",
+    "published_5090": 1264
+   }
+  ],
+  "prefill": [
+   {
+    "prompt_tokens": 512,
+    "seconds": 0.698088877,
+    "tok_s": 733.4309668423496
+   },
+   {
+    "prompt_tokens": 2048,
+    "seconds": 2.531374696,
+    "tok_s": 809.0465640018391
+   },
+   {
+    "prompt_tokens": 8192,
+    "seconds": 10.313630817,
+    "tok_s": 794.2886598672014
+   }
+  ]
+ },
+ "gpu_after": "NVIDIA GeForce RTX 5060 Ti, 16311 MiB, 15542 MiB, 595.99.02"
+}

@@ -93,8 +93,8 @@ def _gpu_memory_warning(device: int = 0) -> Optional[str]:
 
 def _add_engine_args(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--model-dir", help="folder with the model files (default: $YASAKANI_MODEL_DIR)")
-    sp.add_argument("--dll", help="path of yskn.dll (default: $YASAKANI_DLL, or the bin folder next to the package)")
-    sp.add_argument("--max-ctx", type=int, default=None, help="context length in tokens: input + thinking + answer (default: the model's 262144)")
+    sp.add_argument("--dll", help="path of yskn.dll / libyskn.so (default: $YASAKANI_DLL, or the bin folder next to the package)")
+    sp.add_argument("--max-ctx", type=int, default=None, help="context length in tokens: input + thinking + answer (default: the model's 262144, or less when the GPU memory does not hold that much)")
     sp.add_argument("--device", type=int, default=0, help="CUDA device index (default 0)")
     sp.add_argument("--seed0", type=int, default=1, help="seed of the first request; every request without its own seed uses the next one")
 
@@ -118,7 +118,8 @@ def _open_stack(args, *, warm: bool = True):
     except BaseException:
         eng.close()
         raise
-    _say("model ready in %.0f s (context %d tokens)" % (time.time() - t0, eng.max_ctx))
+    _say("model ready in %.0f s (context %d tokens%s)" % (time.time() - t0, eng.max_ctx,
+         ", chosen to fit the free GPU memory; set --max-ctx to change it" if eng.auto_ctx else ""))
     note = _gpu_memory_warning(args.device)
     if note:
         _say(note)

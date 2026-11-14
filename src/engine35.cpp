@@ -223,7 +223,10 @@ Engine35::Engine35(const std::string& path, int max_ctx, int flags) : flags_(fla
   V_ = c.vocab; H_ = c.hidden; F_ = c.ffn; nlayers_ = c.layers; eps_ = c.eps;
   max_ctx_ = ((max_ctx + 63) / 64) * 64; m_.max_ctx = max_ctx_;
   cudaDeviceGetAttribute(&m_.sm_count, cudaDevAttrMultiProcessorCount, 0);
-  want_ = m_.sm_count * 8;
+  // Cards with few SMs (RTX 5060 Ti: 36) run 2 to 3% faster with more, smaller work units per matrix (measured 2026-11-14; the
+  // sums are exact integers, so the output bits do not change).  Larger cards keep the release's values.
+  small_gpu_ = m_.sm_count <= 48;
+  want_ = m_.sm_count * (small_gpu_ ? 16 : 8);
   { const char* e = std::getenv("YSKN_Q35_WANT"); if (e && std::atoi(e) > 0) want_ = std::atoi(e); }   
   shared_weights_ = get_shared35(path, want_, xsm_ != 0);
   const json& J = m_.c.raw.at("model");
@@ -270,7 +273,7 @@ Engine35::Engine35(const std::string& path, int max_ctx, int flags) : flags_(fla
     Y.gate = up(p + "mlp.gate_proj"); Y.up = up(p + "mlp.up_proj"); Y.down = up(p + "mlp.down_proj");
     Y.ln1 = vec(p + "input_layernorm", H_); Y.ln2 = vec(p + "post_attention_layernorm", H_);
   }
-  { int hw = m_.c.tensor("lm_head").cols / 512; const char* e = std::getenv("YSKN_Q35_HEAD_W"); if (e && std::atoi(e) > 0) hw = std::atoi(e);   
+  { int hw = small_gpu_ ? 3 : m_.c.tensor("lm_head").cols / 512; const char* e = std::getenv("YSKN_Q35_HEAD_W"); if (e && std::atoi(e) > 0) hw = std::atoi(e);   
     head_ = up("lm_head", hw); }
   { const char* e = std::getenv("YSKN_Q35_EMB_HOST"); if (e && e[0]) emb_host_ = std::atoi(e); }
   fnorm_ = vec("norm", H_);

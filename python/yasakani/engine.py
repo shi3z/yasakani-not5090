@@ -84,12 +84,46 @@ def _put_narrow_env_utf8(env: Dict[str, str]) -> None:
             raise YasakaniError("could not pass %s to the engine library" % k)
 
 
+# ---- a context length that fits the free GPU memory --------------------------------------------------------------------
+# Measured on an RTX 5060 Ti 16 GB with the fastest model: the engine takes the size of the three model files plus about 1.8 GiB,
+# and the KV5 cache about 21.4 KiB per token of context.  700 MiB are left free for the work buffers of long prompts.
+CTX_FIXED_MIB = 1800
+CTX_KIB_PER_TOKEN = 21.4
+CTX_MARGIN_MIB = 700
+CTX_STEP = 16384
+
+
+def fit_max_ctx(pack: ModelPack, device: int = 0) -> Optional[int]:
+    """The largest context (a multiple of 16,384 tokens) that fits the GPU memory that is free now; None when it cannot be told.
+    A value below 16,384 means that the model itself does not fit."""
+    import shutil
+    import subprocess
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return None
+    try:
+        r = subprocess.run([exe, "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits", "-i", str(int(device))],
+                           capture_output=True, text=True, timeout=15)
+        total, used = [float(x) for x in r.stdout.strip().splitlines()[0].split(",")]
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+    files = sum(p.stat().st_size for p in (pack.weights, pack.draft, pack.draft_head)) / 1048576.0
+    room = total - used - files - CTX_FIXED_MIB - CTX_MARGIN_MIB
+    n = int(room * 1024.0 / CTX_KIB_PER_TOKEN) // CTX_STEP * CTX_STEP
+    return max(0, min(n, pack.max_ctx))
+
+
 class Engine:
     """One model on one GPU.  Calls are serialized; ``cancel()`` may be called from any thread."""
 
     def __init__(self, pack: ModelPack, *, max_ctx: Optional[int] = None, device: int = 0, dll: Optional[str] = None,
                  profile: Optional[RuntimeProfile] = None, lib: Optional[NativeLib] = None):
         self.pack = pack
+        self.auto_ctx = False
+        if not max_ctx:                              # on a card that cannot hold the model's full context, pick what fits
+            fit = fit_max_ctx(pack, device)
+            if fit is not None and 0 < fit < pack.max_ctx:
+                max_ctx, self.auto_ctx = fit, True
         self.max_ctx = int(max_ctx or pack.max_ctx)
         self.profile = profile or RuntimeProfile.default(pack)
         self.utf8_paths = _narrow_paths_as_utf8([pack.weights, pack.draft, pack.draft_head, pack.kv_profile])

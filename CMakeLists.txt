@@ -1,4 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
+# Target card: -DCMAKE_CUDA_ARCHITECTURES=86 (RTX A6000 / RTX 30, the default here), 89 (RTX 40), 120 (RTX 50, e.g. the 5060 Ti).
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(CMAKE_CUDA_ARCHITECTURES 86)
+endif()
 project(yasakani_engine LANGUAGES CXX CUDA)
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -7,7 +11,6 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
-set(CMAKE_CUDA_ARCHITECTURES 86)  # RTX A6000 / sm_86 (release default was 120 / RTX 50). Edit for another card.
 find_package(CUDAToolkit REQUIRED)
 
 add_library(yskn SHARED
@@ -54,4 +57,4 @@ else()
     $<$<COMPILE_LANGUAGE:CXX>:-O2>
     $<$<COMPILE_LANGUAGE:CUDA>:-O3;--fmad=false>)
 endif()
-target_link_libraries(yskn PRIVATE CUDA::cudart)
+target_link_libraries(yskn PRIVATE CUDA::cudart ${CMAKE_DL_LIBS})

@@ -1,0 +1,125 @@
+{
+ "label": "baseline",
+ "max_ctx": 16384,
+ "env": {},
+ "spec": {},
+ "tokens": 768,
+ "gpu_mem_mib": [
+  14502,
+  16311
+ ],
+ "load_s": 3.9067866802215576,
+ "rows": [
+  {
+   "task": "prose",
+   "mode": "off",
+   "prompt_tokens": 33,
+   "tokens": 768,
+   "passes": 767,
+   "prefill_ms": 132.023372,
+   "gen_ms": 20061.099993,
+   "ms_per_pass": 26.155280303780966,
+   "tok_per_pass": 1.0,
+   "tok_s": 38.233197594729724,
+   "sha": "cd07b8ec94b9"
+  },
+  {
+   "task": "prose",
+   "mode": "on",
+   "prompt_tokens": 33,
+   "tokens": 768,
+   "passes": 283,
+   "prefill_ms": 122.321113,
+   "gen_ms": 9710.599131,
+   "ms_per_pass": 34.313071134275624,
+   "tok_per_pass": 2.7102473498233217,
+   "tok_s": 78.98585758230287,
+   "sha": "cd07b8ec94b9"
+  },
+  {
+   "task": "thinking",
+   "mode": "off",
+   "prompt_tokens": 71,
+   "tokens": 768,
+   "passes": 767,
+   "prefill_ms": 194.308372,
+   "gen_ms": 20062.261482,
+   "ms_per_pass": 26.15679463102999,
+   "tok_per_pass": 1.0,
+   "tok_s": 38.23098411353863,
+   "sha": "64857ec40fba"
+  },
+  {
+   "task": "thinking",
+   "mode": "on",
+   "prompt_tokens": 71,
+   "tokens": 768,
+   "passes": 264,
+   "prefill_ms": 184.516314,
+   "gen_ms": 9091.554592,
+   "ms_per_pass": 34.43770678787879,
+   "tok_per_pass": 2.9053030303030303,
+   "tok_s": 84.36400972336591,
+   "sha": "64857ec40fba"
+  },
+  {
+   "task": "code",
+   "mode": "off",
+   "prompt_tokens": 24,
+   "tokens": 768,
+   "passes": 767,
+   "prefill_ms": 118.204955,
+   "gen_ms": 20060.694022,
+   "ms_per_pass": 26.154751006518904,
+   "tok_per_pass": 1.0,
+   "tok_s": 38.23397132516216,
+   "sha": "0e6f2601cbdf"
+  },
+  {
+   "task": "code",
+   "mode": "on",
+   "prompt_tokens": 24,
+   "tokens": 768,
+   "passes": 178,
+   "prefill_ms": 113.603596,
+   "gen_ms": 6336.103248,
+   "ms_per_pass": 35.596085662921354,
+   "tok_per_pass": 4.308988764044944,
+   "tok_s": 121.0523203267094,
+   "sha": "0e6f2601cbdf"
+  },
+  {
+   "task": "csv-to-json",
+   "mode": "off",
+   "prompt_tokens": 1056,
+   "tokens": 768,
+   "passes": 767,
+   "prefill_ms": 1436.536444,
+   "gen_ms": 20147.690354,
+   "ms_per_pass": 26.268175168187742,
+   "tok_per_pass": 1.0,
+   "tok_s": 38.0688796841532,
+   "sha": "ced4026b5c34"
+  },
+  {
+   "task": "csv-to-json",
+   "mode": "on",
+   "prompt_tokens": 1056,
+   "tokens": 768,
+   "passes": 51,
+   "prefill_ms": 1417.628765,
+   "gen_ms": 2163.90472,
+   "ms_per_pass": 42.42950431372549,
+   "tok_per_pass": 15.03921568627451,
+   "tok_s": 354.4518355688045,
+   "sha": "ced4026b5c34"
+  }
+ ],
+ "published_5090": {
+  "off": 126,
+  "prose": 279,
+  "thinking": 298,
+  "code": 420,
+  "csv-to-json": 1264
+ }
+}

@@ -1,0 +1,4 @@
+hello (think off)      prompt    22  out    25  ttft 0.12s     65.8 tok/s  finish=stop  | こんにちは、私はAIアシスタントです。 あなたの質問や課題を解決するために、いつでもお手伝いします。
+code (think off)       prompt    24  out  2048  ttft 0.12s    143.6 tok/s  finish=length  | Here's a complete, self-contained Harry Potter experience — 
+essay ja (think on)    prompt    71  out  4096  ttft 0.19s    136.3 tok/s  finish=length  | 
+tool call              prompt   277  out    27  ttft 0.61s     n/a (1 chunk)  finish=tool_calls  | 

@@ -21,8 +21,15 @@ __device__ __forceinline__ void pdl_trigger() {
 #endif
 }
 bool pdl_enabled();
+// YSKN_PROF=1 times every kernel launch (blocking; use with use_graph=0) and prints a table per row count at exit.
+bool prof_enabled();
+void prof_add(void* kern, double ms);
+double prof_now_ms();
+inline bool prof_idle(cudaStream_t st) { cudaStreamCaptureStatus cs = cudaStreamCaptureStatusNone; cudaStreamIsCapturing(st, &cs); return cs == cudaStreamCaptureStatusNone; }
 template <typename... KArgs, typename... Args>
 inline void launch_k(void (*kern)(KArgs...), dim3 grid, dim3 block, size_t smem, cudaStream_t st, Args... args) {
+  if (prof_enabled() && prof_idle(st)) { cudaStreamSynchronize(st); const double t0 = prof_now_ms(); kern<<<grid, block, smem, st>>>(args...); cudaStreamSynchronize(st);
+    prof_add(reinterpret_cast<void*>(kern), prof_now_ms() - t0); return; }
   if (!pdl_enabled()) { kern<<<grid, block, smem, st>>>(args...); return; }
   cudaLaunchConfig_t cfg{}; cfg.gridDim = grid; cfg.blockDim = block; cfg.dynamicSmemBytes = smem; cfg.stream = st;
   cudaLaunchAttribute at[1]; at[0].id = cudaLaunchAttributeProgrammaticStreamSerialization; at[0].val.programmaticStreamSerializationAllowed = 1;

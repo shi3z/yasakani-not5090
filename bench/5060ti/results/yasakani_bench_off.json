@@ -1,0 +1,119 @@
+{
+ "version": "0.1.1",
+ "model": "qwen3.8-27b",
+ "gpu": [
+  "NVIDIA GeForce RTX 5060 Ti, 16311 MiB, 300 MiB, 595.99.02"
+ ],
+ "tokens_per_test": 512,
+ "runs": [
+  {
+   "test": "explain",
+   "run": 1,
+   "prompt_tokens": 30,
+   "tokens": 512,
+   "seconds": 4.08,
+   "tokens_per_s": 125.5,
+   "tokens_per_pass": 4.2
+  },
+  {
+   "test": "explain",
+   "run": 2,
+   "prompt_tokens": 30,
+   "tokens": 512,
+   "seconds": 4.076,
+   "tokens_per_s": 125.6,
+   "tokens_per_pass": 4.2
+  },
+  {
+   "test": "explain",
+   "run": 3,
+   "prompt_tokens": 30,
+   "tokens": 512,
+   "seconds": 4.077,
+   "tokens_per_s": 125.6,
+   "tokens_per_pass": 4.2
+  },
+  {
+   "test": "code",
+   "run": 1,
+   "prompt_tokens": 28,
+   "tokens": 512,
+   "seconds": 2.53,
+   "tokens_per_s": 202.4,
+   "tokens_per_pass": 7.31
+  },
+  {
+   "test": "code",
+   "run": 2,
+   "prompt_tokens": 28,
+   "tokens": 512,
+   "seconds": 2.524,
+   "tokens_per_s": 202.9,
+   "tokens_per_pass": 7.31
+  },
+  {
+   "test": "code",
+   "run": 3,
+   "prompt_tokens": 28,
+   "tokens": 512,
+   "seconds": 2.524,
+   "tokens_per_s": 202.9,
+   "tokens_per_pass": 7.31
+  },
+  {
+   "test": "story",
+   "run": 1,
+   "prompt_tokens": 29,
+   "tokens": 512,
+   "seconds": 6.971,
+   "tokens_per_s": 73.4,
+   "tokens_per_pass": 2.44
+  },
+  {
+   "test": "story",
+   "run": 2,
+   "prompt_tokens": 29,
+   "tokens": 512,
+   "seconds": 6.968,
+   "tokens_per_s": 73.5,
+   "tokens_per_pass": 2.44
+  },
+  {
+   "test": "story",
+   "run": 3,
+   "prompt_tokens": 29,
+   "tokens": 512,
+   "seconds": 6.967,
+   "tokens_per_s": 73.5,
+   "tokens_per_pass": 2.44
+  },
+  {
+   "test": "proof",
+   "run": 1,
+   "prompt_tokens": 24,
+   "tokens": 512,
+   "seconds": 2.629,
+   "tokens_per_s": 194.8,
+   "tokens_per_pass": 7.11
+  },
+  {
+   "test": "proof",
+   "run": 2,
+   "prompt_tokens": 24,
+   "tokens": 512,
+   "seconds": 2.625,
+   "tokens_per_s": 195.1,
+   "tokens_per_pass": 7.11
+  },
+  {
+   "test": "proof",
+   "run": 3,
+   "prompt_tokens": 24,
+   "tokens": 512,
+   "seconds": 2.625,
+   "tokens_per_s": 195.0,
+   "tokens_per_pass": 7.11
+  }
+ ],
+ "mean_tokens_per_s": 149.2
+}

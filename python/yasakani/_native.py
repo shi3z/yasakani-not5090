@@ -75,7 +75,8 @@ class NativeLib:
         try:
             self.dll = C.CDLL(str(self.path))
         except OSError as ex:
-            raise YasakaniError(_VC_HINT + str(ex)) from ex
+            hint = _VC_HINT if sys.platform == "win32" else "The engine library could not be loaded (it needs a recent NVIDIA driver).  Details: "
+            raise YasakaniError(hint + str(ex)) from ex
         self.fn = {}
         missing = []
         for name, (argtypes, restype) in SIGNATURES.items():

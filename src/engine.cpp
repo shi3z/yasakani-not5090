@@ -32,6 +32,27 @@ bool pdl_enabled() {
   static const int max_m = [] { const char* e = std::getenv("YSKN_PDL_MAX_M"); return e ? std::atoi(e) : 16; }();   
   return on && pdl_supported() && g_pdl_rows <= max_m;
 }
+// ---- blocking per-kernel profile (YSKN_PROF=1, with use_graph=0); summarize with bench/5060ti/profsum.py ----
+}
+#if !defined(_WIN32)
+#include <dlfcn.h>
+#endif
+#include <chrono>
+#include <map>
+#include <mutex>
+namespace yskn {
+namespace { struct ProfRec { double ms = 0; long n = 0; }; std::map<std::pair<int, void*>, ProfRec> g_prof; std::mutex g_prof_mu;
+void prof_dump() {
+  std::map<int, double> tot; for (auto& kv : g_prof) tot[kv.first.first] += kv.second.ms;
+  for (auto& kv : g_prof) { unsigned long long off = (unsigned long long)(size_t)kv.first.second;
+#if !defined(_WIN32)
+    Dl_info di{}; if (dladdr(kv.first.second, &di) && di.dli_fbase) off = (unsigned long long)((char*)kv.first.second - (char*)di.dli_fbase);   // offset in the library: resolve with nm
+#endif
+    std::fprintf(stderr, "[prof] rows=%d ms=%.3f n=%ld %llx\n", kv.first.first, kv.second.ms, kv.second.n, off); }
+  for (auto& kv : tot) std::fprintf(stderr, "[prof-total] rows=%d ms=%.3f\n", kv.first, kv.second); } }
+bool prof_enabled() { static const bool on = [] { const char* e = std::getenv("YSKN_PROF"); const bool v = e && e[0] == '1'; if (v) std::atexit(prof_dump); return v; }(); return on; }
+double prof_now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+void prof_add(void* kern, double ms) { std::lock_guard<std::mutex> g(g_prof_mu); ProfRec& r = g_prof[{g_pdl_rows, kern}]; r.ms += ms; r.n++; }
 template <class T2> static T2* dz(size_t bytes) { T2* p = nullptr; cudaMalloc(&p, bytes); cudaMemset(p, 0, bytes); return p; }
 
 Engine::Engine(const std::string& path, int max_ctx, int flags) : flags_(flags) {

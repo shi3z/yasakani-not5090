@@ -1,0 +1,31 @@
+# qwen38_27b_speed.yskn | NVIDIA GeForce RTX 5060 Ti, 16311 MiB, 15446 MiB, 595.99.02 | context 65536 | load 3.9 s
+== general, thinking off (the prompts of `yasakani bench`, 512 tokens)
+explain                prompt     30  out   512    33.44 ms/pass    4.19 tok/pass     125.3 tok/s  length
+code                   prompt     28  out   512    36.03 ms/pass    7.30 tok/pass     202.6 tok/s  length
+story                  prompt     29  out   512    33.19 ms/pass    2.43 tok/pass      73.3 tok/s  length
+proof                  prompt     24  out   512    36.44 ms/pass    7.10 tok/pass     194.8 tok/s  length
+mean 149.0 tok/s
+== general, thinking on (the prompts of `yasakani bench`, 512 tokens)
+explain                prompt     70  out   512    33.42 ms/pass    4.12 tok/pass     123.3 tok/s  length
+code                   prompt     68  out   512    33.71 ms/pass    4.69 tok/pass     139.1 tok/s  length
+story                  prompt     69  out   512    33.27 ms/pass    2.49 tok/pass      74.9 tok/s  length
+proof                  prompt     64  out   459    34.36 ms/pass    6.11 tok/pass     177.7 tok/s  stop
+mean 128.8 tok/s
+== upstream's three tasks (bench/20261103/prompts/cases.json), thinking off
+edit_code              prompt   4769  out  4708    40.28 ms/pass   14.05 tok/pass     348.9 tok/s  stop  exact=True
+edit_jsonl             prompt   2927  out  2854    42.42 ms/pass   13.92 tok/pass     328.1 tok/s  stop  exact=True
+jsonl_orders_8k        prompt    146  out  8192    42.87 ms/pass   15.31 tok/pass     357.1 tok/s  length
+== docs/TECHNOLOGY.md table 1.3 (768 tokens): look-ahead off / on
+prose (off)            prompt     33  out   768    26.10 ms/pass    1.00 tok/pass      38.3 tok/s  length  sha cd07b8ec94b9
+prose (on)             prompt     33  out   768    33.30 ms/pass    2.71 tok/pass      81.4 tok/s  length  sha cd07b8ec94b9
+thinking (off)         prompt     71  out   768    26.09 ms/pass    1.00 tok/pass      38.3 tok/s  length  sha 64857ec40fba
+thinking (on)          prompt     71  out   768    33.41 ms/pass    2.91 tok/pass      86.9 tok/s  length  sha 64857ec40fba
+code (off)             prompt     24  out   768    26.09 ms/pass    1.00 tok/pass      38.3 tok/s  length  sha 0e6f2601cbdf
+code (on)              prompt     24  out   768    34.58 ms/pass    4.31 tok/pass     124.6 tok/s  length  sha 0e6f2601cbdf
+csv-to-json (off)      prompt   1056  out   768    26.23 ms/pass    1.00 tok/pass      38.1 tok/s  length  sha ced4026b5c34
+csv-to-json (on)       prompt   1056  out   768    41.52 ms/pass   15.04 tok/pass     362.2 tok/s  length  sha ced4026b5c34
+== prefill (prompt processing)
+     512 tokens     0.70 s      733 tok/s
+    2048 tokens     2.53 s      809 tok/s
+    8192 tokens    10.31 s      794 tok/s
+# GPU after the runs: NVIDIA GeForce RTX 5060 Ti, 16311 MiB, 15542 MiB, 595.99.02

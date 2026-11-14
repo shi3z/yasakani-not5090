@@ -304,6 +304,7 @@ private:
   double l2pf2_mb_ = 0.0; cudaStream_t st3_{}; cudaEvent_t ev_g_{}, ev_pf_{}; bool pf2_live_ = false;
   
   
+  bool small_gpu_ = false;                                                 // tuning for cards with few SMs (RTX 5060 Ti)
   int opt_lo_ = 1; bool lo_now_ = false;                                   
   Q35Pf pf_of(std::initializer_list<const DevTensor*> ts, double mb) const;
   bool pf_on(int bit, int M) const { return (l2pf_ & bit) && xsmc_ && M <= 16; }

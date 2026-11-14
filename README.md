@@ -3,11 +3,94 @@
 Unofficial **Linux port** of [YASAKANI](https://github.com/yasakani-dev/yasakani)
 (Apache-2.0), built from source to run on NVIDIA cards **other than the RTX 5090**.
 The upstream release targets Windows 11 and the RTX 5090 (sm_120) only; this fork makes
-the same engine build and run on earlier NVIDIA GPUs, starting with **Ampere (sm_86)**.
-Measured here on a single **NVIDIA RTX A6000 (48 GB)**. Other cards need only a different
-`-DCMAKE_CUDA_ARCHITECTURES` (e.g. 89 for RTX 40, 75 for RTX 20). Not affiliated with or
-endorsed by the upstream YASAKANI authors. See
-[Changes from upstream](#changes-from-upstream-a6000-port).
+the same engine build and run on Linux and on other NVIDIA GPUs. Measured so far:
+
+| Card | Arch | VRAM | Models that fit | Self-check |
+|---|---|---:|---|---|
+| **NVIDIA RTX A6000** | Ampere, sm_86 | 48 GB | quality and speed | 2 of 3 cases |
+| **NVIDIA GeForce RTX 5060 Ti** | Blackwell, sm_120 | 16 GB | speed (fastest) model only | **3 of 3 cases** (same bits as the RTX 5090 reference) |
+
+Other cards need only a different `-DCMAKE_CUDA_ARCHITECTURES` (e.g. 89 for RTX 40,
+75 for RTX 20). Not affiliated with or endorsed by the upstream YASAKANI authors. See
+[Changes from upstream](#changes-from-upstream).
+
+## Benchmark: RTX 5060 Ti (16 GB) next to the RTX A6000
+
+Same engine, same **speed model** (`qwen38_27b_speed.yskn`, 10.3 GB), same prompts, one
+request at a time, greedy, speculative decoding on, `--fmad=false`. The RTX 5090 column is
+upstream's published figure for the same model where one exists.
+
+5060 Ti machine: GeForce RTX 5060 Ti 16 GB (stock, 180 W), Intel Core i7-8700, Ubuntu 26.04,
+driver 595.99.02, CUDA 13.1 (gcc 15.2), built with `-DCMAKE_CUDA_ARCHITECTURES=120`,
+context 65,536 tokens (KV5 cache), measured November 14, 2026. The `yasakani bench` figures
+repeat to within 0.3% over 3 runs.
+
+**Decode speed, speed model — tokens/s (the four prompts of `yasakani bench`, 512 tokens)**
+
+| Prompt | RTX 5060 Ti, thinking off | RTX A6000, thinking off | 5060 Ti / A6000 | RTX 5060 Ti, thinking on | Accepted tokens/pass (5060 Ti, off) |
+|---|---:|---:|---:|---:|---:|
+| explain | 125.6 | 133 | 0.94 | 123.4 | 4.20 |
+| code    | 202.9 | 215 | 0.94 | 139.1 | 7.31 |
+| story   |  73.5 |  95 | 0.77 |  75.0 | 2.44 |
+| proof   | 195.0 | 224 | 0.87 | 156.1 | 7.11 |
+| **mean** | **149.2** | **167** | **0.89** | **123.4** | — |
+
+**Edit and JSONL tasks, speed model — tokens/s (thinking off, upstream's own prompts)**
+
+| Prompt (upstream) | RTX 5060 Ti | tokens/pass | RTX A6000 | RTX 5090 (upstream) | 5060 Ti / 5090 |
+|---|---:|---:|---:|---:|---:|
+| edit_code (Code edit)        | 349 | 14.1 | 413 | 1,222 | 0.29 |
+| edit_jsonl (JSONL edit)      | 328 | 13.9 | 388 | 1,156 | 0.28 |
+| jsonl_orders_8k (Long JSONL) | 357 | 15.3 | 417 | 1,260 | 0.28 |
+
+On the 5060 Ti the answers of both edit tasks are exactly the expected text.
+
+**The four tasks of upstream's technical notes** ([docs/TECHNOLOGY.md](docs/TECHNOLOGY.md), table 1.3; 768 tokens, context 16,384 on the 5090)
+
+| Task | 5060 Ti: one pass | tokens/pass | RTX 5060 Ti tok/s | RTX 5090 tok/s (upstream) | 5060 Ti / 5090 |
+|---|---:|---:|---:|---:|---:|
+| no look-ahead (one token per pass) | 26.1 ms | 1.00 | 38.3 | 126 | 0.30 |
+| prose (an essay) | 33.3 ms | 2.71 | 81.4 | 279 | 0.29 |
+| with thinking (an explanation) | 33.4 ms | 2.91 | 86.9 | 298 | 0.29 |
+| code (a web page) | 34.6 ms | 4.31 | 124.6 | about 420 | 0.30 |
+| structured (CSV to JSON) | 41.5 ms | 15.04 | 362.2 | 1,264 | 0.29 |
+
+The tokens per pass are the same as upstream's to the last digit, and with look-ahead on
+and off the generated tokens are identical. The 5060 Ti runs at 0.28 to 0.30 of the RTX 5090
+throughout, a little above the ratio of the memory bandwidths (448 GB/s against 1,792 GB/s = 0.25):
+without look-ahead it reads about 10.1 GB per pass in 26.1 ms, which is 86% of what its
+memory can deliver (the RTX 5090: 71%). The card is limited by its memory bandwidth, not by its
+arithmetic, so there is little left to tune (see below).
+
+**Prefill — prompt processing (speed model)**
+
+| Prompt tokens | RTX 5060 Ti time | RTX 5060 Ti tokens/s | RTX A6000 tokens/s (quality model) |
+|---|---:|---:|---:|
+| 512    | 0.70 s | 733 | 912 |
+| 2,048  | 2.53 s | 809 | 1,122 |
+| 8,192  | 10.3 s | 794 | 1,105 |
+| 30,000 | 41.6 s | 720 | — |
+| 60,000 | 93.4 s | 643 | — |
+
+**Memory on the 16 GB card.** The speed model with its draft model takes about 13.8 GiB before
+any context, and the KV5 cache about 21.4 KiB per token. A context of 65,536 tokens uses
+15.1 of 15.9 GiB and was tested with a 60,000-token prompt (generation after it: 76 tok/s);
+98,304 does not fit. Without `--max-ctx` the package now picks the largest context that fits
+the memory that is free (65,536 on an otherwise idle 16 GB card). The quality model
+(12.4 GB of weights) does not fit on 16 GB. The model loads in about 4 s.
+
+**What was tuned for the 5060 Ti.** A sweep of the engine's launch settings (47 configurations)
+moved the time of one pass by at most 3%; two settings are now chosen automatically on cards with
+48 SMs or fewer (twice as many work units per matrix, 3 workers for the output matrix): one pass
+with 8 rows went from 34.3 ms to 33.3 ms (prose), with mostly 16 rows from 42.4 ms to 41.5 ms (CSV to JSON),
+and the mean of `yasakani bench` from 145.1 to 149.2 tok/s. The output bits do not change (the sums are exact
+integers). A per-kernel profile (`YSKN_PROF=1`) shows where the time of an 8-row pass goes: about
+65% is the 3-bit weights of the main model, 5% its output matrix, 7% the weights of the draft model, and the rest
+the per-row kernels (state, normalisation, attention). The scripts and the raw records are in [`bench/5060ti/`](bench/5060ti/).
+
+**OpenAI-compatible server on the 5060 Ti** (`yasakani serve`, streaming): code with thinking off
+143.6 tok/s over 2,048 tokens, a Japanese explanation with thinking on (temperature 1.0)
+136.3 tok/s over 4,096 tokens, time to first token 0.12 to 0.19 s; tool calling works.
 
 ## Benchmark on an RTX A6000
 
@@ -95,14 +178,17 @@ e.g. code 486 and story 179 tokens/s. The A6000 reaches code 207 and story 64 �
 vs RTX 5090 ~1.8 TB/s; decode is bandwidth-bound). The prompts differ, so treat this as
 an order-of-magnitude comparison, not a controlled one.
 
-## Build and run on Linux / sm_86
+## Build and run on Linux
 
-Needs a CUDA Toolkit (tested with 12.8), CMake >= 3.24, Ninja, gcc, and an NVIDIA driver.
+Needs a CUDA Toolkit (tested with 12.8 for sm_86 and 13.1 for sm_120), CMake >= 3.24, Ninja,
+gcc, and an NVIDIA driver.
 
 ```sh
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release      # sm_86 (RTX A6000 / RTX 30) by default
 cmake --build build -j            # produces build/libyskn.so
-# For another NVIDIA card, set the arch, e.g. -DCMAKE_CUDA_ARCHITECTURES=89 (RTX 40).
+# For another NVIDIA card, set the arch at configure time:
+#   -DCMAKE_CUDA_ARCHITECTURES=120   RTX 50 (RTX 5060 Ti: needs CUDA 12.8 or newer)
+#   -DCMAKE_CUDA_ARCHITECTURES=89    RTX 40
 
 pip install ./python                                  # the yasakani CLI
 huggingface-cli download yasakani-dev/Qwen3.8-27B-YASAKANI-quality --local-dir ./model
@@ -110,21 +196,48 @@ yasakani bench --model-dir ./model --dll build/libyskn.so --max-ctx 8192
 yasakani chat  --model-dir ./model --dll build/libyskn.so --max-ctx 8192
 ```
 
-The default 262144-token context needs tens of GB for its KV cache and will not fit on
-a 48 GB card; pass `--max-ctx` to bound it.
+On an **RTX 5060 Ti (16 GB)** use the speed model; the context is chosen automatically:
 
-## Changes from upstream (A6000 port)
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120
+cmake --build build -j
+huggingface-cli download yasakani-dev/Qwen3.8-27B-YASAKANI-speed --local-dir ./model-speed
+yasakani selfcheck --model-dir ./model-speed --dll build/libyskn.so     # 3 of 3 cases pass
+yasakani bench     --model-dir ./model-speed --dll build/libyskn.so
+yasakani serve     --model-dir ./model-speed --dll build/libyskn.so
+python bench/5060ti/bench_port.py --model-dir ./model-speed            # the tables above
+```
 
-All guarded so the Windows / sm_120 build is unaffected (a 69-line diff):
+The default 262144-token context needs tens of GB for its KV cache. Without `--max-ctx` the
+package picks the largest context (a multiple of 16,384 tokens) that fits the GPU memory that
+is free at start; pass `--max-ctx` to set it yourself.
 
-- `CMakeLists.txt`: target sm_86; give gcc the same `-O3 --fmad=false` as the MSVC path.
+## Changes from upstream
+
+All guarded so the Windows / sm_120 build is unaffected.
+
+A6000 port (Linux, sm_86):
+
+- `CMakeLists.txt`: target sm_86 unless `-DCMAKE_CUDA_ARCHITECTURES` is given; give gcc the same `-O3 --fmad=false` as the MSVC path.
 - `src/q35_kernels.cu`: guard the `cp.async.bulk.prefetch` (TMA, sm_90+) prefetch hints.
 - `src/pdl.cuh`: make `griddepcontrol` (PDL, sm_90+) a no-op below sm_90.
 - `src/ysk_compat.cuh` (new), used by 5 files: provide `__nanosleep` via PTX `nanosleep.u32`
   (this toolkit does not declare `__nanosleep` in these translation units).
 - `src/engine35.cpp`: `_ftelli64`/`_fseeki64` -> `ftello`/`fseeko` on non-Windows.
 
-**Correctness note.** `yasakani selfcheck` reproduces 2 of its 3 fixed greedy cases exactly
+RTX 5060 Ti (Linux, sm_120, 16 GB):
+
+- `src/engine35.cpp`: on cards with 48 SMs or fewer, twice as many work units per matrix and 3 workers
+  for the output matrix (2 to 3% per pass; same output bits). Larger cards keep the release's values.
+- `python/yasakani/engine.py`: without `--max-ctx`, choose the largest context that fits the free GPU memory
+  (the release's default of 262,144 tokens cannot be allocated on 16 GB).
+- `src/pdl.cuh`, `src/engine.cpp`: `YSKN_PROF=1` times every kernel launch (blocking; for measurements only,
+  with the generation setting `use_graph=0`); `bench/5060ti/profsum.py` prints the table.
+- `CMakeLists.txt`: `-DCMAKE_CUDA_ARCHITECTURES` given on the command line is now honoured.
+- `bench/5060ti/`: the benchmark script of the tables above and its records.
+
+**Correctness note.** On the RTX 5060 Ti (sm_120, CUDA 13.1) `yasakani selfcheck` reproduces all 3 cases.
+On the A6000 `yasakani selfcheck` reproduces 2 of its 3 fixed greedy cases exactly
 against the upstream reference; the long "thinking" case diverges, consistent with
 tensor-core/softmax rounding differing from the reference's sm_120 + CUDA 13.2 build
 (short outputs match, long greedy ones drift). Not bit-identical to the RTX 5090 build.
