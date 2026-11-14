@@ -14,10 +14,23 @@ namespace yskn {
 
 
 thread_local int g_pdl_rows = 1;
+// Programmatic dependent launch exists from compute capability 9.0.  Below that the device side of it
+// (griddepcontrol in pdl.cuh) compiles to nothing, so asking for the launch attribute buys nothing and
+// costs the cudaLaunchKernelEx path: on an A100 (sm_80) leaving it on cost 5.8% of the time of one pass
+// (18.59 ms against 17.51 ms, 2026-11-14).  Decide it from the device, not from the build.
+static bool pdl_supported() {
+  static const bool ok = [] {
+    int dev = 0, major = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return false;
+    if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess) return false;
+    return major >= 9;
+  }();
+  return ok;
+}
 bool pdl_enabled() {
   static const bool on = [] { const char* e = std::getenv("YSKN_NO_PDL"); return !(e && e[0] == '1'); }();
   static const int max_m = [] { const char* e = std::getenv("YSKN_PDL_MAX_M"); return e ? std::atoi(e) : 16; }();   
-  return on && g_pdl_rows <= max_m;
+  return on && pdl_supported() && g_pdl_rows <= max_m;
 }
 template <class T2> static T2* dz(size_t bytes) { T2* p = nullptr; cudaMalloc(&p, bytes); cudaMemset(p, 0, bytes); return p; }
 
