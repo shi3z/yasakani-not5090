@@ -70,6 +70,25 @@ how this card behaves on those task shapes.
 **Other:** model loads in 3-5 s; about 16 GB of VRAM in use at 8 K context
 (11.8 GB weights + 1.4 GB draft head + KV), well within 48 GB.
 
+### Quality model vs speed model (A6000)
+
+Upstream also ships a smaller **speed model** (10.3 GB vs 12.4 GB). It reads less memory
+per pass, so it is faster on every task, most on prose. Both measured here the same way
+(greedy, thinking off, A6000).
+
+| Task | Quality tok/s | Speed tok/s |
+|---|---:|---:|
+| explain | 117 | 133 |
+| code    | 207 | 215 |
+| story   |  64 |  95 |
+| proof   | 158 | 224 |
+| **general mean** | **136** | **167** |
+| edit_code (Code edit)        | 375 | 413 |
+| edit_jsonl (JSONL edit)      | 380 | 388 |
+| jsonl_orders_8k (Long JSONL) | 382 | 417 |
+
+Download it with `yasakani-dev/Qwen3.8-27B-YASAKANI-speed` and point `--model-dir` at it.
+
 **Versus the RTX 5090.** Upstream's published quality-model figures (thinking off) are
 e.g. code 486 and story 179 tokens/s. The A6000 reaches code 207 and story 64 — roughly
 1/2.4 to 1/2.8 of the RTX 5090, in line with the memory-bandwidth gap (A6000 0.77 TB/s
