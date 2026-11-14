@@ -26,6 +26,20 @@ to within 1% over 3 runs (thinking off) / 2 runs (thinking on).
 Speed varies 2-3x with content because the draft model's acceptance rate does
 (code accepts ~7.9 tokens per forward pass, story ~2.5).
 
+**Translation and structured output — tokens/s (greedy, thinking off, 3 runs)**
+
+| Prompt | tokens/s | Accepted tokens/pass |
+|---|---:|---:|
+| translation_en_ja | 98.1 | 3.74 |
+| translation_ja_en | 147.0 | 5.57 |
+| structured_json | 202.9 | 7.76 |
+| structured_csv | 91.0 | 3.48 |
+
+These use this port's own representative prompts (short translation and
+JSON/CSV generation tasks), not upstream's exact benchmark prompts, so they are
+not directly comparable to upstream's Translation/Structured columns; they show
+how this card behaves on those task shapes.
+
 **Prefill — prompt processing**
 
 | Prompt tokens | Time | tokens/s |
