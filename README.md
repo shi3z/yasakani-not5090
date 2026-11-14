@@ -1,3 +1,86 @@
+# YASAKANI on NVIDIA RTX A6000 (Linux)
+
+Unofficial **Linux / sm_86** port of [YASAKANI](https://github.com/yasakani-dev/yasakani)
+(Apache-2.0), built from source and run on a single **NVIDIA RTX A6000 (48 GB)**.
+The upstream release targets Windows 11 and the RTX 5090 only; this fork makes the
+same engine build and run on Ampere. It is not affiliated with or endorsed by the
+upstream YASAKANI authors. See [Changes from upstream](#changes-from-upstream-a6000-port).
+
+## Benchmark on an RTX A6000
+
+Measured on this port: one request at a time, quality model (12.4 GB), INT8 KV cache,
+speculative decoding on, `--fmad=false`. Machine: RTX A6000 48 GB, AMD Ryzen 9 9950X,
+Ubuntu, driver 580.178.04, CUDA 12.8 (gcc 13). Each decode figure is greedy and stable
+to within 1% over 3 runs (thinking off) / 2 runs (thinking on).
+
+**Decode speed — tokens/s (greedy)**
+
+| Prompt | Thinking off | Thinking on | Accepted tokens/pass (off) |
+|---|---:|---:|---:|
+| explain | 117.3 | 103.5 | 4.49 |
+| code    | 207.1 | 152.5 | 7.88 |
+| story   |  63.9 |  60.7 | 2.46 |
+| proof   | 157.5 | 137.0 | 6.10 |
+| **mean** | **136.4** | **113.5** | — |
+
+Speed varies 2-3x with content because the draft model's acceptance rate does
+(code accepts ~7.9 tokens per forward pass, story ~2.5).
+
+**Prefill — prompt processing**
+
+| Prompt tokens | Time | tokens/s |
+|---|---:|---:|
+| 512   | 0.56 s | 912 |
+| 2,048 | 1.83 s | 1,122 |
+| 8,192 | 7.42 s | 1,105 |
+
+**Other:** model loads in 3-5 s; about 16 GB of VRAM in use at 8 K context
+(11.8 GB weights + 1.4 GB draft head + KV), well within 48 GB.
+
+**Versus the RTX 5090.** Upstream's published quality-model figures (thinking off) are
+e.g. code 486 and story 179 tokens/s. The A6000 reaches code 207 and story 64 — roughly
+1/2.4 to 1/2.8 of the RTX 5090, in line with the memory-bandwidth gap (A6000 0.77 TB/s
+vs RTX 5090 ~1.8 TB/s; decode is bandwidth-bound). The prompts differ, so treat this as
+an order-of-magnitude comparison, not a controlled one.
+
+## Build and run on Linux / sm_86
+
+Needs a CUDA Toolkit (tested with 12.8), CMake >= 3.24, Ninja, gcc, and an NVIDIA driver.
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j            # produces build/libyskn.so
+# For another NVIDIA card, set the arch, e.g. -DCMAKE_CUDA_ARCHITECTURES=89 (RTX 40).
+
+pip install ./python                                  # the yasakani CLI
+huggingface-cli download yasakani-dev/Qwen3.8-27B-YASAKANI-quality --local-dir ./model
+yasakani bench --model-dir ./model --dll build/libyskn.so --max-ctx 8192
+yasakani chat  --model-dir ./model --dll build/libyskn.so --max-ctx 8192
+```
+
+The default 262144-token context needs tens of GB for its KV cache and will not fit on
+a 48 GB card; pass `--max-ctx` to bound it.
+
+## Changes from upstream (A6000 port)
+
+All guarded so the Windows / sm_120 build is unaffected (a 69-line diff):
+
+- `CMakeLists.txt`: target sm_86; give gcc the same `-O3 --fmad=false` as the MSVC path.
+- `src/q35_kernels.cu`: guard the `cp.async.bulk.prefetch` (TMA, sm_90+) prefetch hints.
+- `src/pdl.cuh`: make `griddepcontrol` (PDL, sm_90+) a no-op below sm_90.
+- `src/ysk_compat.cuh` (new), used by 5 files: provide `__nanosleep` via PTX `nanosleep.u32`
+  (this toolkit does not declare `__nanosleep` in these translation units).
+- `src/engine35.cpp`: `_ftelli64`/`_fseeki64` -> `ftello`/`fseeko` on non-Windows.
+
+**Correctness note.** `yasakani selfcheck` reproduces 2 of its 3 fixed greedy cases exactly
+against the upstream reference; the long "thinking" case diverges, consistent with
+tensor-core/softmax rounding differing from the reference's sm_120 + CUDA 13.2 build
+(short outputs match, long greedy ones drift). Not bit-identical to the RTX 5090 build.
+
+This port keeps the upstream `LICENSE` and `NOTICE`; YASAKANI is Apache-2.0.
+
+---
+
 # YASAKANI
 
 A local LLM engine for **Windows** and **one NVIDIA RTX 5090**, built for one model: **Qwen3.8-27B**. Open source, Apache License 2.0.
