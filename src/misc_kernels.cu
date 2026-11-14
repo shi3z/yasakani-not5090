@@ -5,6 +5,15 @@
 #include <cfloat>
 #include "a8_prologue.cuh"
 #include "args.hpp"
+
+// --- portability: __nanosleep is not declared by every CUDA toolkit; use PTX nanosleep (sm_70+) ---
+static __device__ __forceinline__ void ysk_nanosleep(unsigned ns){
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 700)
+  asm volatile("nanosleep.u32 %0;" :: "r"(ns) : "memory");
+#else
+  (void)ns;
+#endif
+}
 namespace yskn {
 
 __device__ __forceinline__ uint32_t read_window(const uint32_t* w, uint32_t start, uint32_t width) {   
@@ -188,7 +197,7 @@ __global__ void verify_prologue_kernel(const int* vin, int* d_pos, int* d_toks, 
 __global__ void __launch_bounds__(256) prefetch_kernel(const PfEntry* plan, int n, const volatile int* prog) {
   for (int e = 0; e < n; ++e) {
     const PfEntry E = plan[e];
-    if (threadIdx.x == 0) { long long spins = 0; while (*prog < E.gate && spins < (1ll << 24)) { __nanosleep(256); ++spins; } }
+    if (threadIdx.x == 0) { long long spins = 0; while (*prog < E.gate && spins < (1ll << 24)) { ysk_nanosleep(256); ++spins; } }
     __syncthreads();
     const char* base = reinterpret_cast<const char*>(E.p);
     const size_t lines = (E.bytes + 127) / 128;

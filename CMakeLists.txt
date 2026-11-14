@@ -7,7 +7,7 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
-set(CMAKE_CUDA_ARCHITECTURES 120)
+set(CMAKE_CUDA_ARCHITECTURES 86)  # RTX A6000 / sm_86 (release default was 120 / RTX 50). Edit for another card.
 find_package(CUDAToolkit REQUIRED)
 
 add_library(yskn SHARED
@@ -48,5 +48,10 @@ if(MSVC)
   target_compile_options(yskn PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:/utf-8;/bigobj;/O2;/d1trimfile:${CMAKE_SOURCE_DIR}/>
     $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8;-Xcompiler=/bigobj;-Xcompiler=/d1trimfile:${CMAKE_SOURCE_DIR}/;-O3;--fmad=false>)
+else()
+  # Non-MSVC (Linux/gcc): keep the release's numerics (--fmad=false) and optimization.
+  target_compile_options(yskn PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:-O2>
+    $<$<COMPILE_LANGUAGE:CUDA>:-O3;--fmad=false>)
 endif()
 target_link_libraries(yskn PRIVATE CUDA::cudart)

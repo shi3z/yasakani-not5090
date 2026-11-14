@@ -13,6 +13,7 @@
 #include "pm_math.cuh"
 #include <cstdio>
 #include <algorithm>
+#include "ysk_compat.cuh"
 namespace yskn {
 
 

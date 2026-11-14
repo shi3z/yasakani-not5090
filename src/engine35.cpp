@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 the YASAKANI authors
 #include "engine35.hpp"
+#if !defined(_WIN32)
+#include <cstdio>
+#define _ftelli64 ftello
+#define _fseeki64 fseeko
+#endif
 #include <algorithm>
 #include <map>
 #include <mutex>

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <type_traits>
+#include "ysk_compat.cuh"
 namespace yskn {
 struct Q35G6Seg {
   TensorDev t; float* y; int ldy; const int8_t* qx; const float* alpha; const float* S;

@@ -4,6 +4,15 @@
 #include <cuda_fp16.h>
 #include "a8_prologue.cuh"
 #include "post_kernels.hpp"
+
+// --- portability: __nanosleep is not declared by every CUDA toolkit; use PTX nanosleep (sm_70+) ---
+static __device__ __forceinline__ void ysk_nanosleep(unsigned ns){
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 700)
+  asm volatile("nanosleep.u32 %0;" :: "r"(ns) : "memory");
+#else
+  (void)ns;
+#endif
+}
 namespace yskn {
 
 __device__ __forceinline__ float combine(const float* part, int nw, int M, int N, int tok, int n) {
@@ -277,7 +286,7 @@ __global__ void __launch_bounds__(512) res_norm_last_kernel(ResNormLastArgs X) {
   __threadfence(); __syncthreads();
   if (tid == 0) {                                                        
     const unsigned old = atomicAdd(X.cnt + tok, 1u), target = (old / (unsigned)nb + 1u) * (unsigned)nb;
-    while ((int)(*reinterpret_cast<volatile unsigned*>(X.cnt + tok) - target) < 0) __nanosleep(40);
+    while ((int)(*reinterpret_cast<volatile unsigned*>(X.cnt + tok) - target) < 0) ysk_nanosleep(40);
     __threadfence();
   }
   __syncthreads();
