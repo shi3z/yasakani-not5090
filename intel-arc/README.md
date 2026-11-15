@@ -19,24 +19,26 @@ Needs the oneAPI DPC++ compiler (icpx 2026.2, `source /opt/intel/oneapi/setvars.
 
 ## Results (B60 vs RTX 5060 Ti 16 GB, same machine)
 
-`yasakani bench`, 512 tokens, greedy, context 65536, mean of four tasks, tokens per second.
-The 5060 Ti runs the upstream CUDA engine with the fastest model (the quality model does not fit 16 GB with the draft model).
+`yasakani bench`, 512 tokens, greedy, context 65,536, mean of four tasks, tokens per second (November 15, 2026).
+The 5060 Ti runs the CUDA engine with the fastest model (the quality model does not fit 16 GB with the draft model).
 
 | | 5060 Ti, fastest | B60, fastest | B60, quality |
 |---|---|---|---|
-| thinking off | 149.1 | 70.5 | 65.4 |
-| thinking on | 123.6 | 58.3 | 57.2 |
+| thinking off | 149.1 | 65.2 | 62.9 |
+| thinking on | 123.6 | 57.9 | 56.8 |
 
 Long prompts (generation, tokens per second / prompt read, tokens per second):
 
 | prompt tokens | 5060 Ti, fastest | B60, fastest | B60, quality |
 |---|---|---|---|
-| 8000 | 99.1 / 792 | 26.4 / 142 | 29.8 / 138 |
-| 30000 | 96.1 / 720 | 14.6 / 75 | 14.7 / 74 |
-| 60000 | 76.5 / 643 | 9.9 / 45 | 7.5 / 45 |
+| 8000 | 99.1 / 792 | 44.1 / 201 | 44.3 / 193 |
+| 30000 | 96.1 / 720 | 36.2 / 179 | 35.8 / 180 |
+| 60000 | 76.5 / 643 | 30.3 / 161 | 25.9 / 157 |
 
-The B60 is about half as fast with short contexts and much slower with long ones: the attention
-layers of this port have not been optimised for long contexts yet. Raw outputs are in `bench/`.
+The B60 is a little under half as fast as the 5060 Ti when it generates, and a quarter as fast when it reads a prompt
+(16 rows per pass here, up to 512 in the CUDA engine). The attention layers keep decoded copies of the keys and values
+in VRAM (4.3 GB at 65,536 tokens); before that, generation after a 60,000-token prompt ran at 9.9 tokens per second.
+Raw outputs are in `bench/`; the per-prompt tables are in the README of the repository.
 
 ## Layout
 

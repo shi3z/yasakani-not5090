@@ -11,26 +11,26 @@
    "run": 1,
    "prompt_tokens": 30,
    "tokens": 512,
-   "seconds": 7.1,
-   "tokens_per_s": 72.1,
-   "tokens_per_pass": 5.28
+   "seconds": 9.065,
+   "tokens_per_s": 56.5,
+   "tokens_per_pass": 4.16
   },
   {
    "test": "explain",
    "run": 2,
    "prompt_tokens": 30,
    "tokens": 512,
-   "seconds": 7.105,
-   "tokens_per_s": 72.1,
-   "tokens_per_pass": 5.28
+   "seconds": 9.065,
+   "tokens_per_s": 56.5,
+   "tokens_per_pass": 4.16
   },
   {
    "test": "code",
    "run": 1,
    "prompt_tokens": 28,
    "tokens": 512,
-   "seconds": 5.926,
-   "tokens_per_s": 86.4,
+   "seconds": 6.008,
+   "tokens_per_s": 85.2,
    "tokens_per_pass": 6.56
   },
   {
@@ -38,8 +38,8 @@
    "run": 2,
    "prompt_tokens": 28,
    "tokens": 512,
-   "seconds": 5.924,
-   "tokens_per_s": 86.4,
+   "seconds": 6.007,
+   "tokens_per_s": 85.2,
    "tokens_per_pass": 6.56
   },
   {
@@ -47,8 +47,8 @@
    "run": 1,
    "prompt_tokens": 29,
    "tokens": 512,
-   "seconds": 13.789,
-   "tokens_per_s": 37.1,
+   "seconds": 14.091,
+   "tokens_per_s": 36.3,
    "tokens_per_pass": 2.65
   },
   {
@@ -56,8 +56,8 @@
    "run": 2,
    "prompt_tokens": 29,
    "tokens": 512,
-   "seconds": 13.79,
-   "tokens_per_s": 37.1,
+   "seconds": 14.088,
+   "tokens_per_s": 36.3,
    "tokens_per_pass": 2.65
   },
   {
@@ -65,19 +65,19 @@
    "run": 1,
    "prompt_tokens": 24,
    "tokens": 512,
-   "seconds": 5.928,
-   "tokens_per_s": 86.4,
-   "tokens_per_pass": 6.56
+   "seconds": 6.178,
+   "tokens_per_s": 82.9,
+   "tokens_per_pass": 6.32
   },
   {
    "test": "proof",
    "run": 2,
    "prompt_tokens": 24,
    "tokens": 512,
-   "seconds": 5.929,
-   "tokens_per_s": 86.4,
-   "tokens_per_pass": 6.56
+   "seconds": 6.178,
+   "tokens_per_s": 82.9,
+   "tokens_per_pass": 6.32
   }
  ],
- "mean_tokens_per_s": 70.5
+ "mean_tokens_per_s": 65.2
 }

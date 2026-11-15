@@ -11,73 +11,73 @@
    "run": 1,
    "prompt_tokens": 30,
    "tokens": 512,
-   "seconds": 9.054,
-   "tokens_per_s": 56.6,
-   "tokens_per_pass": 4.27
+   "seconds": 10.026,
+   "tokens_per_s": 51.1,
+   "tokens_per_pass": 4.0
   },
   {
    "test": "explain",
    "run": 2,
    "prompt_tokens": 30,
    "tokens": 512,
-   "seconds": 9.053,
-   "tokens_per_s": 56.6,
-   "tokens_per_pass": 4.27
+   "seconds": 9.99,
+   "tokens_per_s": 51.3,
+   "tokens_per_pass": 4.0
   },
   {
    "test": "code",
    "run": 1,
    "prompt_tokens": 28,
    "tokens": 512,
-   "seconds": 5.557,
-   "tokens_per_s": 92.1,
-   "tokens_per_pass": 7.42
+   "seconds": 5.851,
+   "tokens_per_s": 87.5,
+   "tokens_per_pass": 7.01
   },
   {
    "test": "code",
    "run": 2,
    "prompt_tokens": 28,
    "tokens": 512,
-   "seconds": 5.557,
-   "tokens_per_s": 92.1,
-   "tokens_per_pass": 7.42
+   "seconds": 5.85,
+   "tokens_per_s": 87.5,
+   "tokens_per_pass": 7.01
   },
   {
    "test": "story",
    "run": 1,
    "prompt_tokens": 29,
    "tokens": 512,
-   "seconds": 14.857,
-   "tokens_per_s": 34.5,
-   "tokens_per_pass": 2.56
+   "seconds": 15.267,
+   "tokens_per_s": 33.5,
+   "tokens_per_pass": 2.55
   },
   {
    "test": "story",
    "run": 2,
    "prompt_tokens": 29,
    "tokens": 512,
-   "seconds": 14.868,
-   "tokens_per_s": 34.4,
-   "tokens_per_pass": 2.56
+   "seconds": 15.237,
+   "tokens_per_s": 33.6,
+   "tokens_per_pass": 2.55
   },
   {
    "test": "proof",
    "run": 1,
    "prompt_tokens": 24,
    "tokens": 512,
-   "seconds": 6.517,
-   "tokens_per_s": 78.6,
-   "tokens_per_pass": 6.1
+   "seconds": 6.465,
+   "tokens_per_s": 79.2,
+   "tokens_per_pass": 6.24
   },
   {
    "test": "proof",
    "run": 2,
    "prompt_tokens": 24,
    "tokens": 512,
-   "seconds": 6.513,
-   "tokens_per_s": 78.6,
-   "tokens_per_pass": 6.1
+   "seconds": 6.453,
+   "tokens_per_s": 79.3,
+   "tokens_per_pass": 6.24
   }
  ],
- "mean_tokens_per_s": 65.4
+ "mean_tokens_per_s": 62.9
 }
