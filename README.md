@@ -237,6 +237,11 @@ on the 5060 Ti, because the attention layers of this implementation are not yet 
 contexts. The 24 GB of the B60 hold the quality model together with the draft model, which 16 GB
 do not. Raw records: [intel-arc/bench/](intel-arc/bench/). Details: [intel-arc/README.md](intel-arc/README.md).
 
+**Update (attention rewritten).** The tables above were measured before the attention layers were rewritten to keep decoded
+copies of the keys and values in VRAM (4.3 GB at 65,536 tokens) and to use XMX matrix products. One pass with 16 rows at
+60,000 tokens of context went from 414 ms to about 126 ms (20,000 tokens: 84 ms; 256 tokens: 73 ms, unchanged). The long-prompt
+table will be measured again with this version.
+
 ## Build and run on Linux
 
 Needs a CUDA Toolkit (tested with 12.8 for sm_86 and 13.1 for sm_120), CMake >= 3.24, Ninja,

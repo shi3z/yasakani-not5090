@@ -252,3 +252,20 @@ runs when sampling (cpl > 0), so greedy (bench, selfcheck) loses nothing; sampli
 - GPU faults in dmesg: (a) 09:48:57 compute-engine (ccs) page faults = start of the run with a library built from the drafter
   sub-agent's UNFINISHED sources (that run then hung in a USM memcpy); (b) 10:25:23 copy-engine (bcs) fault + reset = the moment
   the hung process was killed. With the finished build: 5 quality selfcheck runs (with and without look-ahead) + bench, 0 faults.
+
+## Attention: decoded mirrors + XMX products (mirror path)
+
+- Problem: `attend` decoded every key from its 5-bit code once per (row, head group): 32 times per pass with 16 rows.
+  One pass grew by 5.8 ms per 1,000 tokens of context (60,000 tokens: 414 ms per pass, prompt read 45 tokens/s).
+- Now (`AttnShared::mir`): `select` also writes each new key and value decoded to bf16 into mirrors in XMX layouts
+  (`Attn::mk`: `[4][G][16 dim chunks][8 dim pairs][16 keys][2]`, `Attn::mv`: `[4][G][16 dim chunks][8 key pairs][16 dims][2]`,
+  4,096 bytes per token and layer for both, 4.3 GB at 65,536 tokens). `post` writes the queries as bf16 (`qa`).
+  `score<QS>`: thread = (KV head, QS groups of 8 queries, part of `A_PS` = 512 keys): bf16 `dpas` scores, maximum of the part,
+  p = exp(score - max), sum, weights `rbf(p * vs)` as bf16 (`pa`). `vacc<VQ, VC>`: weighted values by `dpas`, + mean * sum(p).
+  `combine` merges the parts (same code as for the 42 splits). Parts depend on the absolute position only, so a row's result
+  does not depend on the pass it is computed in (look-ahead on/off stays identical).
+- Not bit-identical to the old path (order of the sums). `YX_ATTN_OLD=1` selects the old path (the bit-exact tests against
+  `ref/` need it); it is also used when the mirrors would need more than `YX_MIRROR_GB` (default 10) GB.
+  Knobs: `YX_PSH` (log2 of the part size, 9), `YX_SV` (QS, VQ, VC digits, 224).
+- `tests/pass_prof <context> <max_ctx>`, speed model, 16 rows, ms per pass: 256: 73; 4,096: 77; 20,000: 84; 60,000: 126
+  (attention 13 / 17 / 24 / 66). 1 row: 56 / 58 / 60 / 72. Self-check: speed model 3 of 3, quality model as before.

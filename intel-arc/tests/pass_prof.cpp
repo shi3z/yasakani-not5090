@@ -9,7 +9,7 @@
 #include <memory>
 using namespace yx;
 int main(int argc, char** argv) {
-  const int ctx = argc > 1 ? atoi(argv[1]) : 256, max_ctx = 8192;
+  const int ctx = argc > 1 ? atoi(argv[1]) : 256, max_ctx = argc > 2 ? atoi(argv[2]) : 8192;
   std::ifstream f("work/ids.bin", std::ios::binary); std::vector<int> base(12); f.read((char*)base.data(), 48);
   Engine E("models/speed/qwen38_27b_speed.yskn", NL); Head hd; hd.init(E);
   std::vector<std::unique_ptr<Attn>> A; for (int l = 3; l < NL; l += 4) A.emplace_back(std::make_unique<Attn>(E, l, max_ctx)); E.q.wait();

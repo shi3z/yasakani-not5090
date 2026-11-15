@@ -15,6 +15,7 @@
 #include <memory>
 namespace yx {
 constexpr int A_NH = 24, A_KVH = 4, A_HD = 256, A_GQ = 6, A_SPL = 42, A_SHORT = 31, A_LONG = 4096, A_NM = 9;
+inline const int A_PSH = std::getenv("YX_PSH") ? atoi(std::getenv("YX_PSH")) : 9; inline const int A_PS = 1 << A_PSH;                   // mirror path: keys per part (absolute position / A_PS), fixed so that a row's result does not depend on the pass
 constexpr int A_NQ = 2 * A_NH * A_HD, A_NKV = A_KVH * A_HD, A_NO = A_NH * A_HD;      // q_proj rows, k/v_proj rows, o_proj columns
 constexpr float A_LOG2E = 1.4426950408889634f, A_LN2 = 0.6931471805599453f;
 
@@ -118,6 +119,11 @@ struct AttnShared {
                                                                                  // tree32 errors [MR][8][9][8], states [MR][8][9][256]
   float *pm = nullptr, *pl = nullptr, *pacc = nullptr;                           // partials [MR][42][24], [MR][42][24][256]
   int* vxi = nullptr; uint8_t* vbp = nullptr;                                    // ESIMD trellis scratch per (row, group, scale, chain): xi [64], back pointers [64][16]
+  // mirror path (decoded bf16 copies of K and V + XMX products): G key groups of 16, NP parts of A_PS keys
+  bool mir = false; int G = 0, NP = 0;
+  float* sc = nullptr;                                                           // scores [4 kvh][12 query groups][G][8 queries][16 keys]
+  uint32_t *pa = nullptr, *qa = nullptr;                                         // weights (bf16 pairs) [4][12][G][8 queries][8 key pairs]; queries [4][12][16 dim chunks][8 queries][8 dim pairs]
+  float *pm2 = nullptr, *pl2 = nullptr, *pacc2 = nullptr;                        // partials [MR][NP][24], [MR][NP][24][256]
   AttnShared(Engine& E, int max_ctx_, const std::string& profile) : max_ctx(max_ctx_) {
     prof.load(profile);
     { auto t = rope_table_host(max_ctx); rope = to_dev(E.q, t.data(), t.size()); }
@@ -129,6 +135,12 @@ struct AttnShared {
     enc_st = E.dev<uint8_t>((size_t)MRMAX * 8 * A_NM * 256);
     pm = E.dev<float>(MRMAX * A_SPL * A_NH); pl = E.dev<float>(MRMAX * A_SPL * A_NH); pacc = E.dev<float>((size_t)MRMAX * A_SPL * A_NH * 256);
     vxi = E.dev<int>((size_t)MRMAX * 8 * A_NM * 4 * 64); vbp = E.dev<uint8_t>((size_t)MRMAX * 8 * A_NM * 4 * 1024);
+    G = (max_ctx + 15) / 16; NP = (max_ctx + A_PS - 1) / A_PS;
+    { const char* o = std::getenv("YX_ATTN_OLD"); const char* gb = std::getenv("YX_MIRROR_GB"); const double lim = gb ? atof(gb) : 10.0;
+      const double need = 16.0 * 2 * 4 * (double)G * 8192 + 48.0 * G * (512 + 256);                  // 16 layers x (K + V) mirrors + scores + weights
+      mir = E.fast && !(o && atoi(o)) && need <= lim * 1073741824.0; }
+    if (mir) { sc = E.dev<float>((size_t)48 * G * 128); pa = E.dev<uint32_t>((size_t)48 * G * 64); qa = E.dev<uint32_t>(48 * 16 * 64);
+      pm2 = E.dev<float>((size_t)MRMAX * NP * A_NH); pl2 = E.dev<float>((size_t)MRMAX * NP * A_NH); pacc2 = E.dev<float>((size_t)MRMAX * NP * A_NH * 256); }
   }
 };
 // KV profile: $YX_KV_PROFILE, else $YSKN_TB_PROFILE (set by the Python package to the model folder's file), else the speed model's
@@ -149,6 +161,7 @@ struct Attn {
   int* gmeta = nullptr;      // [8][4]: guard, m, has_mu, 0
   uint32_t *kp = nullptr, *vp = nullptr; float *kps = nullptr, *vps = nullptr;   // packed K (always), packed V (vpk): [4][max_ctx][40] words, [4][max_ctx]
   int8_t* v8 = nullptr; float* vs = nullptr;                                     // INT8 V (!vpk): [4][max_ctx][256], [4][max_ctx]
+  uint16_t *mk = nullptr, *mv = nullptr;                                         // mirrors (sh->mir), bf16: K [4][G][16 dim chunks][8 dim pairs][16 keys][2], V [4][G][16 dim chunks][8 key pairs][16 dims][2]
   std::shared_ptr<AttnShared> sh;
   Attn() = default;
   Attn(Engine& E, int layer_, int max_ctx_) : Attn(E, layer_, attn_shared(E, max_ctx_)) {}
@@ -172,6 +185,7 @@ struct Attn {
     kp = E.dev<uint32_t>((size_t)4 * max_ctx * 40 + 64); kps = E.dev<float>((size_t)4 * max_ctx + 64);
     if (vpk) { vp = E.dev<uint32_t>((size_t)4 * max_ctx * 40 + 64); vps = E.dev<float>((size_t)4 * max_ctx + 64); }
     else { v8 = E.dev<int8_t>((size_t)4 * max_ctx * 256); vs = E.dev<float>((size_t)4 * max_ctx + 64); }
+    if (sh->mir) { mk = E.dev<uint16_t>((size_t)4 * sh->G * 4096); mv = E.dev<uint16_t>((size_t)4 * sh->G * 4096); }
   }
 };
 
@@ -221,7 +235,8 @@ template <int QC> YXI vu tb_states16(const uint32_t* w) {
 struct Args {
   const int64_t *aq, *ak, *av; const float *tq, *tk, *tv, *sq, *sk, *sv, *us_in, *S, *qn, *kn, *rope, *sg, *mult, *gf, *si; const int *gci, *gmeta;
   float *q16, *gate, *y, *y2, *enc_r, *enc_c, *enc_e, *pm, *pl, *pacc, *kps, *vps, *vs, *us, *alpha; uint8_t *enc_st, *vbp; int* vxi; uint32_t *kp, *vp; int8_t *v8, *qx; int32_t* Aw;
-  int M, MR, pos0, max_ctx; float eps; bool vpk; };
+  int M, MR, pos0, max_ctx; float eps; bool vpk;
+  const uint16_t *mk, *mv; float* sc; uint32_t *pa, *qa; int G, NP, PS; bool mir; };
 
 // 1. post: one thread per (row, 512-block of the projection outputs)
 inline void post(sycl::queue& Q, const Args P) {
@@ -235,7 +250,10 @@ inline void post(sycl::queue& Q, const Args P) {
     if (blk < 24) { float* go = P.gate + (size_t)(tok * 24 + blk) * 256; float* qo = P.q16 + (size_t)(tok * 24 + blk) * 256;
       unroll<16>([&](auto ki) { constexpr int k = decltype(ki)::value; block_store<float, 16>(go + 16 * k, x[16 + k]); });
       v_norm_rope(x, P.qn, cs, P.eps); v_rot_fwd(x, P.sg);
-      unroll<16>([&](auto ki) { constexpr int k = decltype(ki)::value; block_store<float, 16>(qo + 16 * k, v_rbf(x[k])); });
+      unroll<16>([&](auto ki) { constexpr int k = decltype(ki)::value; x[k] = v_rbf(x[k]); block_store<float, 16>(qo + 16 * k, x[k]); });
+      if (P.mir) { const int u = tok * 6 + blk % 6; uint32_t* qo2 = P.qa + (size_t)((blk / 6) * 12 + u / 8) * 1024 + (u % 8) * 8;
+        unroll<16>([&](auto ki) { constexpr int k = decltype(ki)::value; vu b = bits(x[k]) >> 16;
+          const simd<uint32_t, 8> lo = b.template select<8, 2>(0), hi = b.template select<8, 2>(1); block_store<uint32_t, 8>(qo2 + k * 64, lo | (hi << 16)); }); }
       return; }
     const int kind = blk >= 26;
     unroll<2>([&](auto hi) { constexpr int hh = decltype(hi)::value; vf* xh = x + 16 * hh; const int g8 = kind * 4 + (blk - 24 - 2 * kind) * 2 + hh;
@@ -360,13 +378,72 @@ template <int NG> inline void attend(sycl::queue& Q, const Args P) {
       block_store<float, 16>(po + g * 256 + 16 * cc, block_load<float, 16>(po + g * 256 + 16 * cc) + block_load<float, 16>(GV + 512 + 16 * cc) * l[g]); }); });
     unroll<NG>([&](auto gi) { constexpr int g = decltype(gi)::value; P.pm[oi + g] = m[g]; P.pl[oi + g] = l[g]; }); });
 }
+// 4m. mirror path, scores + softmax weights: one thread per (KV head, QS groups of 8 queries, part of A_PS keys).
+// Query u = row * 6 + (head % 6) of a KV head sits in group u / 8, slot u % 8.  Per 16 keys: 16 XMX products (bf16 x bf16 -> float) per
+// query group; the maximum of the part, then p = exp(score - max), the sum of p and the weights rbf(p * vs) as bf16 for the value products.
+template <int QS> inline void score(sycl::queue& Q, const Args P) {
+  const int NQ = (P.M * 6 + 7) / 8, NQS = (NQ + QS - 1) / QS, NPp = (P.pos0 + P.M - 1) / P.PS + 1;
+  Q.parallel_for(sycl::range<1>((size_t)4 * NQS * NPp), [=](sycl::id<1> it) SYCL_ESIMD_KERNEL {
+    constexpr auto BF = xmx::dpas_argument_type::bf16; const float NINF = -std::numeric_limits<float>::infinity();
+    const int s = it[0] % NPp, rr = it[0] / NPp, qs0 = (rr % NQS) * QS, kvh = rr / NQS, nq = NQ - qs0 < QS ? NQ - qs0 : QS;
+    const int last = P.pos0 + P.M - 1, g0 = s * (P.PS / 16), ge0 = g0 + P.PS / 16, gE = ge0 < last / 16 + 1 ? ge0 : last / 16 + 1;
+    const size_t r0 = (size_t)kvh * P.max_ctx; const float* vsc = P.vpk ? P.vps : P.vs; const vi iota(0, 1);
+    const int* KB0 = (const int*)P.mk + (size_t)kvh * P.G * 2048; const int* QA = (const int*)P.qa + (size_t)(kvh * 12 + qs0) * 1024;
+    float* SC = P.sc + (size_t)(kvh * 12 + qs0) * P.G * 128; uint32_t* PA = P.pa + (size_t)(kvh * 12 + qs0) * P.G * 64;
+    for (int g = g0; g < gE; ++g) { const int* KB = KB0 + (size_t)g * 2048;
+      simd<float, 128> acc[QS]; unroll<QS>([&](auto qi) { acc[decltype(qi)::value] = 0.f; });
+      unroll<16>([&](auto ci) { constexpr int c = decltype(ci)::value; simd<int, 128> B;
+        B.template select<64, 1>(0) = block_load<int, 64>(KB + c * 128); B.template select<64, 1>(64) = block_load<int, 64>(KB + c * 128 + 64);
+        unroll<QS>([&](auto qi) { constexpr int q = decltype(qi)::value; if (q < nq) { const simd<int, 64> A = block_load<int, 64>(QA + (q * 16 + c) * 64);
+          acc[q] = xmx::dpas<8, 8, float, float, int, int, BF, BF>(acc[q], B, A); } }); });
+      const vf ks = block_load<float, 16>(P.kps + r0 + 16 * g) * 0.0625f; const bool msk = 16 * g + 15 > P.pos0;
+      unroll<QS>([&](auto qi) { constexpr int q = decltype(qi)::value; if (q < nq) {
+        unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; vf a = acc[q].template select<16, 1>(16 * m); a = a * ks;
+          if (msk) { const int lim = P.pos0 + ((qs0 + q) * 8 + m) / 6 - 16 * g; a.merge(vf(NINF), iota > lim); }
+          acc[q].template select<16, 1>(16 * m) = a; });
+        block_store<float, 64>(SC + ((size_t)q * P.G + g) * 128, acc[q].template select<64, 1>(0)); block_store<float, 64>(SC + ((size_t)q * P.G + g) * 128 + 64, acc[q].template select<64, 1>(64)); } }); }
+    float mx[QS][8];                                                                                // maximum of the part per query: second sweep over the stored scores
+    unroll<QS>([&](auto qi) { constexpr int q = decltype(qi)::value; if (q < nq) { vf vm8[8]; unroll<8>([&](auto mi) { vm8[decltype(mi)::value] = NINF; });
+      for (int g = g0; g < gE; ++g) { const float* sp = SC + ((size_t)q * P.G + g) * 128;
+        unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; vm8[m] = (max)(vm8[m], block_load<float, 16>(sp + 16 * m)); }); }
+      unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; mx[q][m] = hmax<float>(vm8[m]); }); } });
+    vf ls[QS][8]; unroll<QS>([&](auto qi) { unroll<8>([&](auto mi) { ls[decltype(qi)::value][decltype(mi)::value] = 0.f; }); });
+    for (int g = g0; g < gE; ++g) { const vf vsv = block_load<float, 16>(vsc + r0 + 16 * g);
+      unroll<QS>([&](auto qi) { constexpr int q = decltype(qi)::value; if (q < nq) { const float* sp = SC + ((size_t)q * P.G + g) * 128; uint32_t* po = PA + ((size_t)q * P.G + g) * 64;
+        unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; const vf e = v_expf(block_load<float, 16>(sp + 16 * m) - mx[q][m]); ls[q][m] = ls[q][m] + e;
+          vu b = v_f2bf(e * vsv); const simd<uint32_t, 8> lo = b.template select<8, 2>(0), hi = b.template select<8, 2>(1); block_store<uint32_t, 8>(po + 8 * m, lo | (hi << 16)); }); } }); }
+    unroll<QS>([&](auto qi) { constexpr int q = decltype(qi)::value; if (q < nq) { unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value;
+      const int u = (qs0 + q) * 8 + m, row = u / 6; if (row < P.M) { const size_t oi = ((size_t)row * P.NP + s) * A_NH + kvh * 6 + u % 6;
+        P.pm[oi] = mx[q][m]; P.pl[oi] = tree16v(ls[q][m]); } }); } }); });
+}
+// 4m. mirror path, weighted values: one thread per (KV head, VQ query groups, VC chunks of 16 dims, part).  Per 16 keys one XMX product per
+// (query group, dim chunk); the mean of a packed V stream is added as mean * sum(p).
+template <int VQ, int VC> inline void vacc(sycl::queue& Q, const Args P) {
+  constexpr int NCS = 16 / VC; const int NQ = (P.M * 6 + 7) / 8, NQS = (NQ + VQ - 1) / VQ, NPp = (P.pos0 + P.M - 1) / P.PS + 1;
+  Q.parallel_for(sycl::range<1>((size_t)4 * NQS * NCS * NPp), [=](sycl::id<1> it) SYCL_ESIMD_KERNEL {
+    constexpr auto BF = xmx::dpas_argument_type::bf16;
+    const int s = it[0] % NPp; int rr = it[0] / NPp; const int c0 = (rr % NCS) * VC; rr /= NCS; const int qs0 = (rr % NQS) * VQ, kvh = rr / NQS, nq = NQ - qs0 < VQ ? NQ - qs0 : VQ;
+    const int last = P.pos0 + P.M - 1, g0 = s * (P.PS / 16), ge0 = g0 + P.PS / 16, gE = ge0 < last / 16 + 1 ? ge0 : last / 16 + 1;
+    const int* VB0 = (const int*)P.mv + (size_t)kvh * P.G * 2048 + c0 * 128; const int* PA = (const int*)P.pa + (size_t)(kvh * 12 + qs0) * P.G * 64;
+    simd<float, 128> o[VQ][VC]; unroll<VQ>([&](auto qi) { unroll<VC>([&](auto ci) { o[decltype(qi)::value][decltype(ci)::value] = 0.f; }); });
+    for (int g = g0; g < gE; ++g) { const int* VB = VB0 + (size_t)g * 2048;
+      simd<int, 64> A[VQ]; unroll<VQ>([&](auto qi) { constexpr int q = decltype(qi)::value; if (q < nq) A[q] = block_load<int, 64>(PA + ((size_t)q * P.G + g) * 64); });
+      unroll<VC>([&](auto ci) { constexpr int c = decltype(ci)::value; simd<int, 128> B;
+        B.template select<64, 1>(0) = block_load<int, 64>(VB + c * 128); B.template select<64, 1>(64) = block_load<int, 64>(VB + c * 128 + 64);
+        unroll<VQ>([&](auto qi) { constexpr int q = decltype(qi)::value; if (q < nq) o[q][c] = xmx::dpas<8, 8, float, float, int, int, BF, BF>(o[q][c], B, A[q]); }); }); }
+    const float* MU = P.gf + (size_t)(4 + kvh) * 1280 + 512 + c0 * 16; const bool vpk = P.vpk;
+    unroll<VQ>([&](auto qi) { constexpr int q = decltype(qi)::value; if (q < nq) { unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value;
+      const int u = (qs0 + q) * 8 + m, row = u / 6; if (row < P.M) { const size_t oi = ((size_t)row * P.NP + s) * A_NH + kvh * 6 + u % 6; const float l = P.pl[oi]; float* po = P.pacc + oi * 256 + c0 * 16;
+        unroll<VC>([&](auto ci) { constexpr int c = decltype(ci)::value; vf v = o[q][c].template select<16, 1>(16 * m); if (vpk) v = v + block_load<float, 16>(MU + 16 * c) * l;
+          block_store<float, 16>(po + 16 * c, v); }); } }); } }); });
+}
 // 5. combine the splits, inverse rotation, gate, quantised input of o_proj and its GEMM scales (one work-group per row)
 inline void combine(sycl::queue& Q, const Args P) {
   Q.parallel_for(sycl::nd_range<1>(P.M * 12, 12), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
     slm_init<256>();
     const int gid = (int)it.get_global_id(0), tok = gid / 12, blk = gid % 12; vf x[32];
-    const int ln = P.pos0 + tok + 1, S = ln < A_LONG ? A_SHORT : A_SPL;
-    unroll<2>([&](auto hi) { constexpr int hh = decltype(hi)::value; vf* O = x + 16 * hh; const int hd = 2 * blk + hh; const size_t b0 = (size_t)tok * A_SPL * A_NH + hd;
+    const int ln = P.pos0 + tok + 1, S = P.mir ? (ln - 1) / P.PS + 1 : ln < A_LONG ? A_SHORT : A_SPL, SP = P.mir ? P.NP : A_SPL;
+    unroll<2>([&](auto hi) { constexpr int hh = decltype(hi)::value; vf* O = x + 16 * hh; const int hd = 2 * blk + hh; const size_t b0 = (size_t)tok * SP * A_NH + hd;
       float M2 = -1e30f; for (int s = 0; s < S; ++s) { const float v = P.pm[b0 + (size_t)s * A_NH]; M2 = M2 > v ? M2 : v; }
       float L = 0.f; unroll<16>([&](auto ki) { O[decltype(ki)::value] = 0.f; });
       for (int s = 0; s < S; ++s) { const size_t i = b0 + (size_t)s * A_NH; const float pv = P.pm[i]; if (!(pv > -1e29f)) continue;       // weight 0: adds +0
@@ -394,13 +471,16 @@ inline void attn_forward(Engine& E, Attn& A, int M, int pos0) {
   float *q16 = W.q16, *gate = W.gate, *enc_r = W.enc_r, *enc_c = W.enc_c, *enc_e = W.enc_e, *pm = W.pm, *pl = W.pl, *pacc = W.pacc; uint8_t* enc_st = W.enc_st;
   const float *rope = W.rope, *sg = W.sg, *mult = W.mult, *gf = A.gf; const int *gci = A.gci, *gmeta = A.gmeta;
   uint32_t *kp = A.kp, *vp = A.vp; float *kps = A.kps, *vps = A.vps, *vs = A.vs; int8_t* v8 = A.v8;
+  uint16_t *mkp = A.mk, *mvp = A.mv; const int Gn = W.G; const bool mir = W.mir && E.fast;
 
   ak::Args P{}; const bool fast = E.fast;
   if (fast) { P.aq = A.q.part; P.ak = A.k.part; P.av = A.v.part; P.tq = A.q.tau; P.tk = A.k.tau; P.tv = A.v.tau; P.sq = A.q.sg_out; P.sk = A.k.sg_out; P.sv = A.v.sg_out;
     P.us_in = E.us; P.S = E.S; P.qn = A.qn; P.kn = A.kn; P.rope = rope; P.sg = sg; P.mult = mult; P.gf = gf; P.si = A.o.sg_in; P.gci = gci; P.gmeta = gmeta;
     P.q16 = q16; P.gate = gate; P.y = W.y; P.y2 = W.y2; P.enc_r = enc_r; P.enc_c = enc_c; P.enc_e = enc_e; P.pm = pm; P.pl = pl; P.pacc = pacc; P.kps = kps; P.vps = vps; P.vs = vs;
     P.us = E.us; P.alpha = E.alpha; P.enc_st = enc_st; P.vbp = W.vbp; P.vxi = W.vxi; P.kp = kp; P.vp = vp; P.v8 = v8; P.qx = E.qx; P.Aw = E.Aw;
-    P.M = M; P.MR = MR; P.pos0 = pos0; P.max_ctx = max_ctx; P.eps = e; P.vpk = vpk; }
+    P.M = M; P.MR = MR; P.pos0 = pos0; P.max_ctx = max_ctx; P.eps = e; P.vpk = vpk;
+    P.mk = A.mk; P.mv = A.mv; P.sc = W.sc; P.pa = W.pa; P.qa = W.qa; P.G = W.G; P.NP = W.NP; P.PS = A_PS; P.mir = W.mir;
+    if (W.mir) { P.pm = W.pm2; P.pl = W.pl2; P.pacc = W.pacc2; } }
   // 1. post: projection outputs -> q16, gate, rotated K / V rows -> INT8 row -> encoder residual
   if (fast) ak::post(Q, P); else { const int64_t *aq = A.q.part, *ak = A.k.part, *av = A.v.part; const float *tq = A.q.tau, *tk = A.k.tau, *tv = A.v.tau, *sq = A.q.sg_out, *sk = A.k.sg_out, *sv = A.v.sg_out;
     const float *usp = E.us, *SS = E.S, *qn = A.qn, *kn = A.kn;
@@ -470,18 +550,28 @@ inline void attn_forward(Engine& E, Attn& A, int M, int pos0) {
         for (int el = 0; el < 256; ++el) { const uint32_t f = st[el] & 31u; const int g = 5 * el, wi = g >> 5, off = g & 31;
           if (off <= 27) w[wi] |= f << (27 - off); else { w[wi] |= f >> (off - 27); w[wi + 1] |= f << (59 - off); } }
         uint32_t* wo = (kind ? vp : kp) + row * 40; for (int i = 0; i < 40; ++i) wo[i] = w[i];
-        (kind ? vps : kps)[row] = s; return;
+        (kind ? vps : kps)[row] = s;
+        if (mir) { const int p = pos0 + tok, jl = p & 15; uint16_t* mo = (kind ? mvp : mkp) + ((size_t)kvh * Gn + (p >> 4)) * 4096; const float* T = G + 256; uint32_t stt = 0;
+          for (int el = 0; el < 256; ++el) { if ((el & 63) == 0) stt = 0; stt = ((stt << 5) | (st[el] & 31u)) & 255u;
+            const uint16_t hb = (uint16_t)(sycl::bit_cast<uint32_t>(T[stt]) >> 16); const int c = el >> 4, dl = el & 15;
+            if (!kind) mo[((c * 8 + (dl >> 1)) * 16 + jl) * 2 + (dl & 1)] = hb; else mo[((c * 8 + (jl >> 1)) * 16 + dl) * 2 + (jl & 1)] = hb; } }
+        return;
       }
       for (int d = 0; d < 256; ++d) x[d] = G[st[d]] * s;
       for (int j = 0; j < mt[1]; ++j) { const float* U = G + (3 + j) * 256; const float c = ec[j]; for (int d = 0; d < 256; ++d) x[d] = x[d] + c * U[d]; }
       if (mt[2]) for (int d = 0; d < 256; ++d) x[d] = x[d] + G[512 + d];
     }
     float t[256]; const float sc = kv_store8f(x, t); int8_t* vo = v8 + row * 256; for (int d = 0; d < 256; ++d) vo[d] = (int8_t)(int)t[d];
-    vs[row] = sc; });
+    vs[row] = sc;
+    if (mir) { const int p = pos0 + tok, jl = p & 15; uint16_t* mo = mvp + ((size_t)kvh * Gn + (p >> 4)) * 4096;
+      for (int d = 0; d < 256; ++d) mo[(((d >> 4) * 8 + (jl >> 1)) * 16 + (d & 15)) * 2 + (jl & 1)] = (uint16_t)(sycl::bit_cast<uint32_t>(t[d]) >> 16); } });
   stamp(4);
 
   // 4. partial softmax of one (row, query head, split)
-  if (fast) { static const int ng = std::getenv("YX_ATTN_NG") ? atoi(std::getenv("YX_ATTN_NG")) : 0; const int NG = ng ? ng : (M <= 2 ? 1 : 3);     // query heads per thread (measured: 1 is best for M = 1, 3 for M = 8)
+  if (fast && W.mir) { static const int cfg = std::getenv("YX_SV") ? atoi(std::getenv("YX_SV")) : 224; const int qs = cfg / 100, vq = cfg / 10 % 10, vc = cfg % 10;
+    if (qs == 1) ak::score<1>(Q, P); else if (qs == 2) ak::score<2>(Q, P); else ak::score<4>(Q, P);
+    if (vq == 1 && vc == 4) ak::vacc<1, 4>(Q, P); else if (vq == 1) ak::vacc<1, 8>(Q, P); else if (vq == 2 && vc == 2) ak::vacc<2, 2>(Q, P); else if (vq == 2) ak::vacc<2, 4>(Q, P); else ak::vacc<4, 2>(Q, P); }
+  else if (fast) { static const int ng = std::getenv("YX_ATTN_NG") ? atoi(std::getenv("YX_ATTN_NG")) : 0; const int NG = ng ? ng : (M <= 2 ? 1 : 3);     // query heads per thread (measured: 1 is best for M = 1, 3 for M = 8)
     if (NG == 1) ak::attend<1>(Q, P); else if (NG == 2) ak::attend<2>(Q, P); else if (NG == 3) ak::attend<3>(Q, P); else ak::attend<6>(Q, P); }
   else
   Q.parallel_for(sycl::range<1>((size_t)M * A_NH * A_SPL), [=](sycl::id<1> it) { const int s = it[0] % A_SPL, th = it[0] / A_SPL, hd = th % A_NH, tok = th / A_NH, kvh = hd / A_GQ;
