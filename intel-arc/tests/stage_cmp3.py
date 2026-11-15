@@ -1,8 +1,8 @@
 import sys, numpy as np
-sys.path.insert(0, '/home/shi3z/yasakani-src/xe')
+sys.path.insert(0, '.')
 from ref.core import *
-ids = np.fromfile('/data/yasakani/tmp/ids.bin', np.int32); M = len(ids)
-def ld(n, dt, shape): return np.fromfile('/data/yasakani/tmp/st_%s.bin' % n, dt).reshape(shape)
+ids = np.fromfile('work/ids.bin', np.int32); M = len(ids)
+def ld(n, dt, shape): return np.fromfile('work/st_%s.bin' % n, dt).reshape(shape)
 st = State(); st.h = embed(ids); qkv = Tensor('layers.0.linear_attn.in_proj_qkv')
 res_norm(st, None, vec('layers.0.input_layernorm'), qkv.sg_in, want_xn=True)
 al = ld('alpha', f32, (M, 10)); i = np.argwhere(al != st.alpha)[0]; tok, b = int(i[0]), int(i[1])

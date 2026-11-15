@@ -3,14 +3,14 @@
 #   attn_cmp.py chain <tag> <layer> <pos_start> <pass rows...>  after  attn_test chain ...  (layer 3: also compares with ref_h_2 / ref_h_3 of ref/run.py 4 a)
 #   attn_cmp.py unit  <tag> <layer> <pos_start> <pass rows...>  after  attn_test unit ...
 import sys, numpy as np
-sys.path.insert(0, '/home/shi3z/yasakani-src/xe')
+sys.path.insert(0, '.')
 from ref.core import *
-D = '/data/yasakani/tmp/attn/'
+D = 'work/attn/'
 mode, tag, layer = sys.argv[1], D + sys.argv[2] + '_', int(sys.argv[3])
 CN = lambda vpk: [('kp', '<u4', 40), ('kps', '<f4', 1), ('vp', '<u4', 40), ('vps', '<f4', 1)] if vpk else [('kp', '<u4', 40), ('kps', '<f4', 1), ('v8', 'i1', 256), ('vs', '<f4', 1)]
 if mode == 'gen':
     n = int(sys.argv[4]); p0 = int(sys.argv[5]) if len(sys.argv) > 5 else 0
-    base = np.load('/data/yasakani/tmp/ref_h_%d.npy' % (layer - 1)); rng = np.random.default_rng(1000 + layer)
+    base = np.load('work/ref_h_%d.npy' % (layer - 1)); rng = np.random.default_rng(1000 + layer)
     rows = [base[i] if i < len(base) else rbf((rng.standard_normal(len(base)).astype(f32)[:, None] * base).sum(0) / f32(np.sqrt(len(base)))) for i in range(n)]
     np.stack(rows).astype(f32).tofile(tag + 'in.bin')
     if p0:
@@ -37,7 +37,7 @@ if p0:
     blk._grow(p0)
     for n, dt, w in CN(blk.vpk): getattr(blk, n)[:, :p0] = ld('c_' + n, dt, (4, p0, w) if w > 1 else (4, p0))
 if chain:
-    nin = 12; hin_dev = ld('hin', f32, (N, H)); src = np.load('/data/yasakani/tmp/ref_h_%d.npy' % (layer - 1))
+    nin = 12; hin_dev = ld('hin', f32, (N, H)); src = np.load('work/ref_h_%d.npy' % (layer - 1))
     cmp('h_in', hin_dev, src[np.arange(N) % nin])                   # layer input on the device (GDN layers below) vs the reference free run
 else: src = np.fromfile(tag + 'in.bin', f32).reshape(-1, H); nin = len(src)
 out = dict(q16=[], gate=[], y=[], y2=[], h=[]); pos = p0; row = 0
@@ -55,5 +55,5 @@ for k in ('q16', 'gate'): cmp(k, ld(k, f32, (N, 24, 256)), np.concatenate(out[k]
 for n, dt, w in CN(blk.vpk): cmp(n, ld(n, dt, (4, pos, w) if w > 1 else (4, pos)), getattr(blk, n)[:, :pos])
 for k in ('y', 'y2'): cmp(k, ld(k, f32, (N, 24, 256)), np.concatenate(out[k]))
 h = np.concatenate(out['h']); cmp('h', ld('h', f32, (N, H)), h)
-if chain and p0 == 0 and N == 12 and layer == 3: cmp('h vs run', ld('h', f32, (N, H)), np.load('/data/yasakani/tmp/ref_h_3.npy'))
+if chain and p0 == 0 and N == 12 and layer == 3: cmp('h vs run', ld('h', f32, (N, H)), np.load('work/ref_h_3.npy'))
 print('RESULT %s  (%s layer %d, V %s, pos_start %d, passes %s)' % ('ALL BIT-EXACT' if ok_all else 'MISMATCH', mode, layer, 'packed' if blk.vpk else 'INT8', p0, passes))

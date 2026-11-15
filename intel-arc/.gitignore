@@ -30,3 +30,5 @@ __pycache__/
 /tests/prim_test
 /tests/prof_test
 /tests/stage_test
+/models
+/work

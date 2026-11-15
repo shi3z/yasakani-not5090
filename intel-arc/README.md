@@ -46,8 +46,9 @@ layers of this port have not been optimised for long contexts yet. Raw outputs a
 - `tests/` test and experiment programs (`./build.sh tests/<name>`)
 - `PORT_NOTES.md` findings and measurements made during the port
 
-The build scripts are relative to the repository. The Python helper scripts (`ref/`, `tests/*.py`, `oracle.py`, `dump.py`)
-still carry the paths of the development machine and need editing before use.
+All paths are relative to `intel-arc/`. The tests and helper scripts are run from this folder and expect the model folders
+at `models/speed` and `models/quality` (links are fine) and a scratch folder `work/`; the CUDA build of the repository is
+expected at `../build/libyskn.so` where a script compares against it.
 
 Not implemented: side candidates and tree passes for sampling, prompt snapshots, `yskn_decode` / `yskn_nll` / `yskn_state_hash`.
 

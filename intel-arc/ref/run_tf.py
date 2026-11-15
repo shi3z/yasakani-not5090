@@ -2,9 +2,9 @@
 # oracle after layer l.  Isolates the error of one layer from the accumulated drift.  (Prefill from position 0 only:
 # the GDN state / KV cache start empty.)   usage: run_tf.py <oracle> <layer> [<layer> ...]
 import sys, time, numpy as np
-sys.path.insert(0, '/home/shi3z/yasakani-src/xe')
+sys.path.insert(0, '.')
 from ref.core import *
-o = np.load('/data/yasakani/tmp/oracle/%s.npz' % sys.argv[1]); ids = o['ids']; M = len(ids); LY = list(o['layers'])
+o = np.load('work/oracle/%s.npz' % sys.argv[1]); ids = o['ids']; M = len(ids); LY = list(o['layers'])
 def is_attn(l): return l % 4 == 3
 def first_in(l): return Tensor('layers.%d.linear_attn.in_proj_qkv' % l) if not is_attn(l) else Tensor('layers.%d.self_attn.q_proj' % l)
 def one(l, keep=None):

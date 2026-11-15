@@ -10,7 +10,7 @@ E.res_norm(&A.o, M, ln2, gate.sg_in, false);
 ```
 * In: `E.qx / E.alpha / E.S` (and `E.us/E.Aw` when `E.aw_ready`) from the preceding `res_norm`. Out: `A.o.part`, `E.us`.
 * `q.part = E.part`, `k.part = E.part + 16*12288`, `v.part = k.part + 16*1024`, `o.part = E.part` (q/k/v are consumed before o).
-* The KV profile is read from `$YX_KV_PROFILE`, default `/data/yasakani/model-speed/kvq_u5.bin` (`attn_default_profile`).
+* The KV profile is read from `$YX_KV_PROFILE`, default `models/speed/kvq_u5.bin` (`attn_default_profile`).
 * Rows of a rejected pass need no undo: the next pass overwrites their slots (spec C 5.4). Tree passes (`wk` depth table)
   are NOT implemented: depth = row index only.
 * `E.fast` (default) runs the ESIMD kernels (`namespace yx::ak`), `YX_SCALAR=1` the scalar kernels kept in
@@ -53,7 +53,7 @@ The device has no usable fp64, so three float64 spots of the reference were repl
 The own-key path, combine and everything else are unchanged. Not changed but relevant: empty splits are skipped in
 combine (weight 0 adds +0; O and L can never be -0).
 
-Oracle check (`python3 ref/run_tf.py a 3 7 63`, CUDA captures `/data/yasakani/tmp/oracle/a.npz`, 12-row prefill):
+Oracle check (`python3 ref/run_tf.py a 3 7 63`, CUDA captures `work/oracle/a.npz`, 12-row prefill):
 
 | Layer (teacher-forced) | before | after |
 |---|---|---|
@@ -70,17 +70,17 @@ Deviation 3 is not exercised by this oracle (at most one key per tile at 12 rows
 ## Tests
 ```
 ./build.sh tests/attn_test
-python3 ref/run.py 4 a                       # reference free run, writes /data/yasakani/tmp/ref_h_{0..3}.npy
+python3 ref/run.py 4 a                       # reference free run, writes work/ref_h_{0..3}.npy
 tests/attn_regress.sh                        # all cases; every line must read RESULT ALL BIT-EXACT (gen: recreate inputs)
 ./tests/attn_test chain c12 3 0 12   && python3 tests/attn_cmp.py chain c12 3 0 12
 ./tests/attn_test unit  v43 43 0 16 7 1 ...  && python3 tests/attn_cmp.py unit v43 43 0 16 7 1 ...
 YX_NODUMP=1 YX_TIME=30 ./tests/attn_test unit v3 3 0 11                      # timing at pos0 = 11
 YX_NODUMP=1 YX_TIME=30 ./tests/attn_test unit v3 3 0 $(printf '16 %.0s' {1..64})   # timing at pos0 = 1024
 ```
-`chain`: layers 0..3 on the device from `/data/yasakani/tmp/ids.bin`; `unit`: one attention layer fed with hidden rows
+`chain`: layers 0..3 on the device from `work/ids.bin`; `unit`: one attention layer fed with hidden rows
 from `<tag>_in.bin` (`h` = after the attention residual); `pos_start > 0` loads a random cache prefix written by
 `attn_cmp.py gen`. Compared bit-for-bit: RoPE table (all max_ctx rows), layer input, `q16`, gate, cache
-(`kp/kps/vp/vps` or `v8/vs`), `y`, `y2`, `h`. Files under `/data/yasakani/tmp/attn/`.
+(`kp/kps/vp/vps` or `v8/vs`), `y`, `y2`, `h`. Files under `work/attn/`.
 
 Cases that pass bit-exactly (ESIMD kernels): 12 prompt rows through layers 0..3 in one pass (also equal to
 `ref_h_3.npy`) and as 5+1+2+4 passes (dumps identical to the one-pass run); layers 43 / 59 / 63 (INT8 V: guard row,
@@ -112,4 +112,4 @@ context 1024 (attend stage, M=1 / M=8): NG=1 0.141 / 0.900 ms, NG=2 0.148 / 0.57
 * `viterbi` at M = 16 is 4608 threads of ~40 us of work each; `select` is still scalar (15 us, 0.1 ms for INT8-V layers).
 * `pacc` zero-skips rely on `pm <= -1e29` marking empty splits; `pacc` of an empty split is stale memory by design.
 * The first JIT of `tests/attn_test` takes ~75 s (scalar + ESIMD kernels); `SYCL_CACHE_PERSISTENT=1` avoids it.
-* `ref_h_<l>.npy` for l > 3 under `/data/yasakani/tmp` predate the reference change (only used as synthetic inputs).
+* `ref_h_<l>.npy` for l > 3 under `work` predate the reference change (only used as synthetic inputs).

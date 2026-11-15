@@ -1,7 +1,7 @@
 # Spec B — per-layer math of Engine35 (everything except the compressed GEMM and full attention)
 
-Source tree: `/home/shi3z/yasakani-src/yasakani` (commit c0e11b9). All `file:line` references are relative to `src/`.
-Model facts were read from the header of `/data/yasakani/model-speed/qwen38_27b_speed.yskn`.
+Source tree: `..` (commit c0e11b9). All `file:line` references are relative to `src/`.
+Model facts were read from the header of `models/speed/qwen38_27b_speed.yskn`.
 Items I could not settle from the source are marked **UNCERTAIN**.
 
 Contents

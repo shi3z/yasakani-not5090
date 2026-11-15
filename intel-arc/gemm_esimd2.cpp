@@ -17,7 +17,7 @@ template <int N, class F> inline __attribute__((always_inline)) void unroll(F&& 
   [&]<size_t... I>(std::index_sequence<I...>) __attribute__((always_inline)) { (f(std::integral_constant<int, (int)I>{}), ...); }(std::make_index_sequence<N>{}); }
 constexpr int BITS = 6, NW = 4 * BITS, M = 8;
 int main(int argc, char** argv) {
-  std::string p = std::string("/data/yasakani/tmp/") + argv[1];
+  std::string p = std::string("work/") + argv[1];
   const int LS = argc > 2 ? atoi(argv[2]) : 16;
   auto hdr = rd<int>(p + ".hdr"); const int rows = hdr[0], cols = hdr[1], S = cols / 256;
   auto words = rd<uint32_t>(p + ".words"); auto lut = rd<uint32_t>(p + ".lut"); auto x = rd<int8_t>(p + ".x"); auto ref = rd<int>(p + ".ref");

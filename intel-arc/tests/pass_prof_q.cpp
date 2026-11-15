@@ -10,8 +10,8 @@
 using namespace yx;
 int main(int argc, char** argv) {
   const int ctx = argc > 1 ? atoi(argv[1]) : 256, max_ctx = 8192;
-  std::ifstream f("/data/yasakani/tmp/ids.bin", std::ios::binary); std::vector<int> base(12); f.read((char*)base.data(), 48);
-  Engine E("/data/yasakani/model-quality/qwen38_27b_quality.yskn", NL); Head hd; hd.init(E);
+  std::ifstream f("work/ids.bin", std::ios::binary); std::vector<int> base(12); f.read((char*)base.data(), 48);
+  Engine E("models/quality/qwen38_27b_quality.yskn", NL); Head hd; hd.init(E);
   std::vector<std::unique_ptr<Attn>> A; for (int l = 3; l < NL; l += 4) A.emplace_back(std::make_unique<Attn>(E, l, max_ctx)); E.q.wait();
   std::map<std::string, double> T; bool prof = false; int pos = 0;
   auto now = [] { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); };

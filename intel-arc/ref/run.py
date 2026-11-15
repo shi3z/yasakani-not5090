@@ -1,8 +1,8 @@
 # usage: run.py <number of layers> [oracle name]      (prefill pass of the oracle prompt, compare hidden states)
 import sys, time, numpy as np
-sys.path.insert(0, '/home/shi3z/yasakani-src/xe')
+sys.path.insert(0, '.')
 from ref.core import *
-o = np.load('/data/yasakani/tmp/oracle/%s.npz' % (sys.argv[2] if len(sys.argv) > 2 else 'a')); ids = o['ids']; M = len(ids)
+o = np.load('work/oracle/%s.npz' % (sys.argv[2] if len(sys.argv) > 2 else 'a')); ids = o['ids']; M = len(ids)
 upto = int(sys.argv[1]) if len(sys.argv) > 1 else 3
 st = State(); st.h = embed(ids)
 def is_attn(l): return l % 4 == 3
@@ -26,4 +26,4 @@ for l in range(upto):
         print('layer %2d%s: max|diff| %.3e  rel %.3e  exact-equal %.4f  worst-row rel %.3e (row %d)  (%.0f s)' % (l, ' A' if is_attn(l) else '  ', d.max(),
               np.linalg.norm(st.h - ref) / np.linalg.norm(ref), (st.h == ref).mean(), rr.max(), rr.argmax(), time.time() - t0), flush=True)
     else: print('layer %2d%s: (no capture)  (%.0f s)' % (l, ' A' if is_attn(l) else '  ', time.time() - t0), flush=True)
-    np.save('/data/yasakani/tmp/ref%s_h_%d.npy' % ('q' if QUAL else '', l), st.h)
+    np.save('work/ref%s_h_%d.npy' % ('q' if QUAL else '', l), st.h)

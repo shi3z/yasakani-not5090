@@ -7,8 +7,8 @@
 #include <map>
 int main(int argc, char** argv) {
   const int M = atoi(argv[1]);
-  std::ifstream f("/data/yasakani/tmp/ids.bin", std::ios::binary); std::vector<int> ids(16); f.read((char*)ids.data(), 48);
-  yx::Engine E("/data/yasakani/model-speed/qwen38_27b_speed.yskn", 1); E.q.memcpy(E.ids, ids.data(), M * 4).wait();
+  std::ifstream f("work/ids.bin", std::ios::binary); std::vector<int> ids(16); f.read((char*)ids.data(), 48);
+  yx::Engine E("models/speed/qwen38_27b_speed.yskn", 1); E.q.memcpy(E.ids, ids.data(), M * 4).wait();
   using namespace yx; std::map<std::string, double> T; std::vector<std::string> order;
   auto tm = [&](const char* n, auto&& fn) { auto t0 = std::chrono::steady_clock::now(); fn(); E.q.wait(); T[n] += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); if (T.size() > order.size()) order.push_back(n); };
   Layer& Y = E.L[0]; const int R = 20;

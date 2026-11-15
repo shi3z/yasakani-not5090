@@ -2,7 +2,7 @@
 # at the closest positions and compare the sha256 of the resulting ids with the reference.
 import os, sys, json, hashlib, numpy as np
 MD = sys.argv[1]; DLL = sys.argv[2]; CASE = sys.argv[3] if len(sys.argv) > 3 else 'thinking'
-LOG = '/data/yasakani/tmp/margins.txt'
+LOG = 'work/margins.txt'
 os.environ['YX_NO_LOOKAHEAD'] = '1'; os.environ['YX_MARGIN_LOG'] = LOG
 from yasakani.runtime import ModelPack
 from yasakani.engine import Engine, Sampling

@@ -1,8 +1,8 @@
 # A. Model loading and the compressed matrix product (gemv), default configuration
 
-Source root: `/home/shi3z/yasakani-src/yasakani` (commit c0e11b9). All `file:line` references are relative to it.
+Source root: `..` (commit c0e11b9). All `file:line` references are relative to it.
 The source has had its comments stripped; every statement below is derived from code, not from comments.
-Checked against the shipped file `/data/yasakani/model-speed/qwen38_27b_speed.yskn` (header read directly).
+Checked against the shipped file `models/speed/qwen38_27b_speed.yskn` (header read directly).
 
 Notation: `RN(x)` = IEEE float32 round-to-nearest-even of the exact result. All float ops are float32, one rounding per
 operation, no FMA (`--fmad=false`, CMakeLists.txt:50; most kernels also use explicit `__fmul_rn/__fadd_rn/__fdiv_rn`).

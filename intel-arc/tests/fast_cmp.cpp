@@ -6,8 +6,8 @@
 #include <fstream>
 int main(int argc, char** argv) {
   const int upto = atoi(argv[1]), M1 = atoi(argv[2]), M2 = atoi(argv[3]), nc2 = atoi(argv[4]);
-  std::ifstream f("/data/yasakani/tmp/ids.bin", std::ios::binary); std::vector<int> id12(12); f.read((char*)id12.data(), 48);
-  yx::Engine E("/data/yasakani/model-speed/qwen38_27b_speed.yskn", upto); using namespace yx;
+  std::ifstream f("work/ids.bin", std::ios::binary); std::vector<int> id12(12); f.read((char*)id12.data(), 48);
+  yx::Engine E("models/speed/qwen38_27b_speed.yskn", upto); using namespace yx;
   std::ofstream o(argv[5], std::ios::binary);
   auto dump = [&](const void* p, size_t bytes) { std::vector<char> b(bytes); E.q.wait(); E.q.memcpy(b.data(), p, bytes).wait(); o.write(b.data(), bytes); };
   auto pass = [&](int M, int nc, int shift) {

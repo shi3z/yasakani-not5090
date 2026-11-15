@@ -23,7 +23,7 @@ template <int BITS, int MR> static int run(sycl::queue& q, const std::string& p)
 }
 int main(int argc, char** argv) {
   sycl::queue q{sycl::gpu_selector_v};
-  std::string p = std::string("/data/yasakani/tmp/t_") + argv[1]; const int bits = atoi(argv[2]), mr = atoi(argv[3]);
+  std::string p = std::string("work/t_") + argv[1]; const int bits = atoi(argv[2]), mr = atoi(argv[3]);
   if (bits == 6 && mr == 1) return run<6, 1>(q, p); if (bits == 6 && mr == 2) return run<6, 2>(q, p); if (bits == 6 && mr == 4) return run<6, 4>(q, p);
   if (bits == 6 && mr == 8) return run<6, 8>(q, p); if (bits == 6 && mr == 16) return run<6, 16>(q, p);
   if (bits == 8 && mr == 1) return run<8, 1>(q, p); if (bits == 8 && mr == 8) return run<8, 8>(q, p); if (bits == 8 && mr == 16) return run<8, 16>(q, p);

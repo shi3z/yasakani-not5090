@@ -1,7 +1,7 @@
 # C. Full attention and its KV cache (default configuration)
 
 Scope: the 16 full-attention layers of Qwen3.8-27B (`arch qwen3_5`) as the CUDA engine runs them with the shipped
-defaults. All paths are relative to `/home/shi3z/yasakani-src/yasakani/`. Model layers that are full attention:
+defaults. All paths are relative to `../`. Model layers that are full attention:
 3, 7, 11, ..., 63 (`layer_types`, every 4th). "Layer ordinal" `L` below means 0..15 over those layers.
 
 Constants (`src/q35.hpp:13`): `H=5120, NH=24, KVH=4, HD=256, RD=64`; `G = NH/KVH = 6`; `eps = 1e-6` (`rms_norm_eps`).
@@ -635,7 +635,7 @@ is the INT8 form. With `YSKN_TB_CAP=1` `yskn_kv8_read` throws for every layer (`
 | `yskn_set_capture / yskn_capture_rows` | hidden states after chosen layers |
 
 A NumPy reference of sec. 3 that reproduces the first three bit-for-bit is in the scratch file
-`/tmp/claude-1000/-data-yasakani/4a11a3e1-6d6b-4465-b73e-c1314e38eda6/scratchpad/ref.py` (temporary location; copy it
+`ref.py` (temporary location; copy it
 if you want to keep it).
 
 ---------------------------------------------------------------------------------------------------------------------

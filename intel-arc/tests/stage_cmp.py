@@ -1,8 +1,8 @@
 import sys, numpy as np
-sys.path.insert(0, '/home/shi3z/yasakani-src/xe')
+sys.path.insert(0, '.')
 from ref.core import *
-ids = np.fromfile('/data/yasakani/tmp/ids.bin', np.int32); M = len(ids)
-def ld(n, dt, shape): return np.fromfile('/data/yasakani/tmp/st_%s.bin' % n, dt).reshape(shape)
+ids = np.fromfile('work/ids.bin', np.int32); M = len(ids)
+def ld(n, dt, shape): return np.fromfile('work/st_%s.bin' % n, dt).reshape(shape)
 def cmp(name, a, b): print('%-10s equal %s  mismatches %d / %d  maxdiff %s' % (name, bool((a == b).all()), int((a != b).sum()), a.size, np.abs(a.astype(np.float64) - b.astype(np.float64)).max()))
 st = State(); st.h = embed(ids); cmp('emb', ld('emb', f32, (M, H)), st.h)
 qkv = Tensor('layers.0.linear_attn.in_proj_qkv'); zt = Tensor('layers.0.linear_attn.in_proj_z')

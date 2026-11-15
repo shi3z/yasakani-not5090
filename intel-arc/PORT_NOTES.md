@@ -4,12 +4,12 @@ Goal (user, 2026-11-14): port the whole YASAKANI engine (Qwen3.8-27B, .yskn form
 It must be faster than the OpenCL prototype. User rejected OpenCL as the final API.
 
 ## Layout
-- `~/yasakani-src/yasakani/` upstream clone (c0e11b9) + 2-line Linux fix in `src/engine35.cpp` (`ftello/fseeko`).
+- `../` upstream clone (c0e11b9) + 2-line Linux fix in `src/engine35.cpp` (`ftello/fseeko`).
   CUDA build: `build/libyskn.so` (nvcc 13.1 at /usr/local/cuda-13.1). Works on RTX 5060 Ti: selfcheck PASS,
   bench mean 144.9 tok/s (ctx 8192), ~35 ms per pass. Uses 14.5 GB VRAM.
-- Model: `/data/yasakani/model-speed` (symlink `~/yasakani-src/model-speed`). Put big files on /data (366 GB free); `/` is small.
-- `~/yasakani-src/b60/` OpenCL probes + venv (`.venv/bin/yasakani` CLI, pyopencl). `probe4.py` = OpenCL XMX kernel.
-- `~/yasakani-src/xe/` SYCL work. `gemm_esimd2.cpp` = current best kernel. `dump.py` writes test tensors to `/data/yasakani/tmp/`.
+- Model: `models/speed` (symlink `models/speed`). Put big files on /data (366 GB free); `/` is small.
+- `b60/` OpenCL probes + venv (`.venv/bin/yasakani` CLI, pyopencl). `probe4.py` = OpenCL XMX kernel.
+- `./` SYCL work. `gemm_esimd2.cpp` = current best kernel. `dump.py` writes test tensors to `work/`.
 - Compiler: `source /opt/intel/oneapi/setvars.sh; icpx -fsycl -O2 -std=c++20`. Do NOT wrap in `sg render` (drops LD_LIBRARY_PATH;
   user is already in group render). Device: `[level_zero:gpu] Arc Pro B60`.
 - Oracle for validation: CUDA engine exports `yskn_set_capture(layers)`, `yskn_capture_rows`, `yskn_logits`, `yskn_hidden_rows`,
@@ -47,11 +47,11 @@ It must be faster than the OpenCL prototype. User rejected OpenCL as the final A
 - `src/gemm.hpp`: engine GEMM (ESIMD, `yx::gemm<BITS, MR>`), exact int64 per-512-block accumulation, validated on real tensors
   (`tests/gemm_ref.py` + `tests/gemm_test`): ~700 Gw/s for MR 1..8, 491 for MR 16, head (8-bit) 620. Layouts: qx `[Kc/32][MR][32]`,
   Aw `[MR][G]` int32, part `[MR][N]` int64, lut uint32[4096], stream = file's warp layout unchanged.
-- `ref/core.py` + `ref/run.py`: numpy float32 reference (pm math). Validated vs CUDA oracle `/data/yasakani/tmp/oracle/a.npz`
+- `ref/core.py` + `ref/run.py`: numpy float32 reference (pm math). Validated vs CUDA oracle `work/oracle/a.npz`
   (`oracle.py`, default config, 12-token prompt): layer 0 has 8 of 12 rows bit-identical, others off by one bf16 ulp in a few
   elements (CUDA rsqrtf/expf last-bit differences) → spec A/B are right. Attention (`Attn` class) is being added by a sub-agent.
 - `ref/kv_codec_ref.py`: numpy KV5 codec reference from the spec author.
-- The RTX 5060 Ti is in use by ANOTHER session of the user (`/data/yasakani/5060`, bench sweep). Do not run CUDA jobs there
+- The RTX 5060 Ti is in use by ANOTHER session of the user (`..`, bench sweep). Do not run CUDA jobs there
   until it is free (check `nvidia-smi`). An oracle with `ORACLE_ENV=YSKN_Q35_PM=1` (portable math, should be bit-exact vs ref) is
   still to be captured.
 - Python strips every `YSKN_*` env var: name port knobs differently (e.g. `YX_*`).
@@ -66,7 +66,7 @@ It must be faster than the OpenCL prototype. User rejected OpenCL as the final A
 ## Status 2026-11-14 (engine core)
 - `src/kern.hpp` (device helpers, pm math), `src/model.hpp` (loader), `src/engine.hpp` (embed, res_norm, gemm_group, GDN layer,
   state, MLP). Build with `./build.sh tests/<name>`.
-- **Layers 0–2 (GDN + MLP), 12-row prefill pass: bit-exact vs `ref/core.py`** (`tests/layers_test 3`, compare `/data/yasakani/tmp/xe_h_<l>.bin`
+- **Layers 0–2 (GDN + MLP), 12-row prefill pass: bit-exact vs `ref/core.py`** (`tests/layers_test 3`, compare `work/xe_h_<l>.bin`
   with `ref_h_<l>.npy`). `tests/stage_test` + `tests/stage_cmp*.py` compare intermediate buffers.
 - B60 float divide and sqrt are NOT correctly rounded by default (27% of divisions 1 ulp off). Fix: backend option
   `-Xsycl-target-backend "-cl-fp32-correctly-rounded-divide-sqrt"` (in build.sh; user's suggestion; 0 mismatches in 16M, no
@@ -87,7 +87,7 @@ It must be faster than the OpenCL prototype. User rejected OpenCL as the final A
 - Profile before vectorisation (`tests/prof_test 1`): res_norm 0.33–0.5 ms, MLP post ≈ 1.2 ms, GDN posts ≈ 1.2 ms, empty launch 10 µs.
 - ESIMD: plain `/` and `sqrt` are inexact, `div_ieee` / `sqrt_ieee` / `rnde` are exact (`tests/ediv_test`).
 - Build the library: `icpx ... -shared -fPIC src/api.cpp -o libyskn.so` with the flags of build.sh; run with
-  `~/yasakani-src/b60/.venv/bin/yasakani selfcheck --model-dir /data/yasakani/model-speed --dll <lib>` (needs setvars.sh env).
+  `yasakani selfcheck --model-dir models/speed --dll <lib>` (needs setvars.sh env).
 - Then: verify (non-committing M rows) + replay_commit, capture, drafter (spec D 3), speculation loop (spec D 2).
 
 ## Goal update (user, 2026-11-14): keep optimising until the B60 is FASTER than the RTX 5060 Ti
@@ -122,7 +122,7 @@ Reference: 5060 Ti bench mean 144.9 tok/s (explain 121.7 / code 197.1 / story 71
 - One layer (gdn + res_norm + mlp + res_norm, `tests/prof_test`): M=1 4.4 -> 0.98 ms, M=8 6.1 -> 1.08 ms; GEMMs are now ~0.8 ms of it.
 
 ## Status 2026-11-14 (GEMM launch structure)
-- Sampler/texture lookups (64³ RGBA8 3D image, 4 weights per fetch; `~/yasakani-src/b60/probe5.py`): exact but 173 Gw/s; the
+- Sampler/texture lookups (64³ RGBA8 3D image, 4 weights per fetch; `b60/probe5.py`): exact but 173 Gw/s; the
   fetch alone is that slow (≈ 4.3e10 fetches/s, 8x fewer than SLM gathers). Sampler-less image reads: same. Dead end.
 - The GPU runs about **640 ESIMD threads at a time**. A launch with fewer threads leaves it idle (down_proj: 320 threads →
   0.25 ms alone vs 0.116 ms when launches are queued back to back); queued-launch benchmarks therefore overstate the in-engine
@@ -137,8 +137,8 @@ Reference: 5060 Ti bench mean 144.9 tok/s (explain 121.7 / code 197.1 / story 71
 - `src/attn.hpp` (attention + KV5 cache, ESIMD, by sub-agent; notes in `spec/C_port_notes.md`; bit-exact vs ref incl. split passes,
   INT8-V layers, context crossing 4096; tree passes not implemented, M ≤ 16).
 - Library: `lib/libyskn.so` built from `src/api.cpp`:
-  `icpx -fsycl -O2 -std=c++20 -ffp-contract=off -fno-fast-math -Xsycl-target-backend "-cl-fp32-correctly-rounded-divide-sqrt -ffp-contract=off" -I ~/yasakani-src/yasakani/third_party/nlohmann -shared -fPIC -o lib/libyskn.so src/api.cpp`
-- `source /opt/intel/oneapi/setvars.sh; SYCL_CACHE_PERSISTENT=1 ~/yasakani-src/b60/.venv/bin/yasakani selfcheck --model-dir /data/yasakani/model-speed --dll lib/libyskn.so --max-ctx 8192`
+  `icpx -fsycl -O2 -std=c++20 -ffp-contract=off -fno-fast-math -Xsycl-target-backend "-cl-fp32-correctly-rounded-divide-sqrt -ffp-contract=off" -I ../third_party/nlohmann -shared -fPIC -o lib/libyskn.so src/api.cpp`
+- `source /opt/intel/oneapi/setvars.sh; SYCL_CACHE_PERSISTENT=1 yasakani selfcheck --model-dir models/speed --dll lib/libyskn.so --max-ctx 8192`
   → short-answer / thinking (160 tokens) / plain-text all PASS = same greedy ids as the CUDA engine.
   (The CLI's "GPU memory almost full" warning and "GPU:" line come from nvidia-smi = the 5060 Ti, not the B60. Ignore.)
 - `yasakani bench --n 128`: 18.2 tok/s on all four tasks, 1.01 tokens/pass (no look-ahead yet) → ≈ 55 ms per 1-row pass.
@@ -232,9 +232,9 @@ runs when sampling (cpl > 0), so greedy (bench, selfcheck) loses nothing; sampli
 - Drafter + drafter loop ported by sub-agent (`src/draft.hpp`, api.cpp; section above). Speed model bench --n 512:
   explain 72.1 / code 86.3 / story 37.1 / proof 86.4, mean **70.5 tok/s**, 5.26 tokens/pass (CUDA 5060 Ti: 144.9 tok/s, 5.25 tok/pass).
   selfcheck PASS with drafter; ids identical with look-ahead on/off. HCAP and snapshots (mode 2) not implemented.
-- Quality model (`/data/yasakani/model-quality`, 288 4-bit + 112 3-bit body matrices): `Tensor::lut_id` + `gemm_group` now split a
+- Quality model (`models/quality`, 288 4-bit + 112 3-bit body matrices): `Tensor::lut_id` + `gemm_group` now split a
   group by (bits, value table). `attn_default_profile` falls back to `$YSKN_TB_PROFILE`. Reference runs it with `YX_REF_QUALITY=1`
-  (w8 cache in /data/yasakani/tmp/w8q); `YX_MODEL=<file> tests/layers_test 3` is BIT-EXACT vs the reference for layers 0–2.
+  (w8 cache in work/w8q); `YX_MODEL=<file> tests/layers_test 3` is BIT-EXACT vs the reference for layers 0–2.
   Whole pass: 55.8 / 62.5 / 73.6 ms at 1 / 8 / 16 rows (ctx 64). bench --n 512: explain 54.0 / code 91.1 / story 34.1 / proof 77.9,
   mean **64.3 tok/s**. It does not fit the 16 GB 5060 Ti with the drafter.
 - OPEN: quality selfcheck: short-answer PASS, plain-text PASS, **thinking (160 tokens) FAIL** (same with YX_NO_LOOKAHEAD=1).

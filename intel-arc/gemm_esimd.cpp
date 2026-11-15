@@ -15,7 +15,7 @@ template <class T> static std::vector<T> rd(const std::string& p) {
   std::vector<T> v(n / sizeof(T)); f.read((char*)v.data(), n); return v; }
 constexpr int BITS = 6, NW = 4 * BITS, M = 8;
 int main(int argc, char** argv) {
-  std::string p = std::string("/data/yasakani/tmp/") + argv[1];
+  std::string p = std::string("work/") + argv[1];
   const int LS = argc > 2 ? atoi(argv[2]) : 16;
   auto hdr = rd<int>(p + ".hdr"); const int rows = hdr[0], cols = hdr[1], S = cols / 256;
   auto words = rd<uint32_t>(p + ".words"); auto lut = rd<uint32_t>(p + ".lut"); auto x = rd<int8_t>(p + ".x"); auto ref = rd<int>(p + ".ref");

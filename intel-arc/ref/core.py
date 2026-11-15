@@ -1,13 +1,13 @@
 # Executable reference of the YASAKANI default path (spec/A_gemv.md, spec/B_layers.md) in numpy float32.
 # Slow, CPU only.  Used to validate the spec against the CUDA engine and to unit-test the SYCL kernels.
 import os, sys, numpy as np
-sys.path.insert(0, '/home/shi3z/yasakani-src/yasakani/tools')
+sys.path.insert(0, '../tools')
 import yskn_decode as Y
 f32 = np.float32
 K512 = f32(0.044194173824159216)
-MD = '/data/yasakani/model-speed'
+MD = 'models/speed'
 QUAL = os.environ.get('YX_REF_QUALITY') == '1'
-if QUAL: MD = '/data/yasakani/model-quality'
+if QUAL: MD = 'models/quality'
 C = Y.Container(MD + ('/qwen38_27b_quality.yskn' if QUAL else '/qwen38_27b_speed.yskn'))
 EPS = f32(1e-6)
 H = 5120
@@ -93,7 +93,7 @@ class Tensor:
         self._w8 = None
     def w8(self):
         if self._w8 is None:
-            p = ('/data/yasakani/tmp/w8q/' if QUAL else '/data/yasakani/tmp/w8/') + self.name + '.npy'
+            p = ('work/w8q/' if QUAL else 'work/w8/') + self.name + '.npy'
             if os.path.exists(p): self._w8 = np.load(p, mmap_mode='r')
             else:
                 uw = Y.unit_words(C, self.t); w = np.empty((self.N, self.Kc), np.int8)

@@ -2,10 +2,10 @@
 #include "../src/engine.hpp"
 #include <fstream>
 template <class T> static void dump(sycl::queue& q, const char* name, const T* d, size_t n) { q.wait(); std::vector<T> v(n); q.memcpy(v.data(), d, n * sizeof(T)).wait();
-  std::ofstream o(std::string("/data/yasakani/tmp/st_") + name + ".bin", std::ios::binary); o.write((char*)v.data(), n * sizeof(T)); }
+  std::ofstream o(std::string("work/st_") + name + ".bin", std::ios::binary); o.write((char*)v.data(), n * sizeof(T)); }
 int main() {
-  std::ifstream f("/data/yasakani/tmp/ids.bin", std::ios::binary | std::ios::ate); const int M = (int)f.tellg() / 4; f.seekg(0); std::vector<int> ids(M); f.read((char*)ids.data(), M * 4);
-  yx::Engine E("/data/yasakani/model-speed/qwen38_27b_speed.yskn", 1); E.q.memcpy(E.ids, ids.data(), M * 4).wait();
+  std::ifstream f("work/ids.bin", std::ios::binary | std::ios::ate); const int M = (int)f.tellg() / 4; f.seekg(0); std::vector<int> ids(M); f.read((char*)ids.data(), M * 4);
+  yx::Engine E("models/speed/qwen38_27b_speed.yskn", 1); E.q.memcpy(E.ids, ids.data(), M * 4).wait();
   using namespace yx;
   E.embed(M); dump(E.q, "emb", E.h, (size_t)M * H);
   E.res_norm(nullptr, M, E.L[0].ln1, E.first_sg(0), true);

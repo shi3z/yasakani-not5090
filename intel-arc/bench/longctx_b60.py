@@ -5,14 +5,14 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != HERE]
 ap = argparse.ArgumentParser()
-ap.add_argument("--model-dir", default="/data/yasakani/model-speed"); ap.add_argument("--dll", default=str(HERE / "yasakani/build/libyskn.so"))
+ap.add_argument("--model-dir", default="models/speed"); ap.add_argument("--dll", default=str(HERE / "yasakani/build/libyskn.so"))
 ap.add_argument("--max-ctx", type=int, default=None); ap.add_argument("--prompt-tokens", default="8000,30000,60000"); ap.add_argument("--tokens", type=int, default=256)
 a = ap.parse_args()
 from yasakani import Engine, ModelPack
 from yasakani.engine import Sampling
 from yasakani.textio import ChatFormatter
 pack = ModelPack.load(a.model_dir); fmt = ChatFormatter(pack.root)
-text = (Path("/data/yasakani/5060") / "yasakani/bench/20261101/prompts/long.txt").read_text(encoding="utf-8")
+text = (Path("..") / "bench/20261101/prompts/long.txt").read_text(encoding="utf-8")
 base = fmt.encode(text)
 peak = [0]; stop = [False]
 def watch():

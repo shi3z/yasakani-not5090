@@ -1,5 +1,5 @@
 # Look-ahead on/off check for the Xe port: the ids must not depend on drafting (drafter, D0/D1) nor on prefix reuse.
-#   source /opt/intel/oneapi/setvars.sh; SYCL_CACHE_PERSISTENT=1 YX_DSTAT=1 ~/yasakani-src/b60/.venv/bin/python tests/la_check.py [--tokens 320] [--sample] [--tasks explain,code]
+#   source /opt/intel/oneapi/setvars.sh; SYCL_CACHE_PERSISTENT=1 YX_DSTAT=1 python tests/la_check.py [--tokens 320] [--sample] [--tasks explain,code]
 import argparse, sys, time
 import numpy as np
 from yasakani import Engine, ModelPack
@@ -8,8 +8,8 @@ from yasakani.textio import ChatFormatter
 from yasakani.cli import BUILTIN_PROMPTS
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--model-dir", default="/data/yasakani/model-speed")
-ap.add_argument("--dll", default="/home/shi3z/yasakani-src/xe/lib/libyskn.so")
+ap.add_argument("--model-dir", default="models/speed")
+ap.add_argument("--dll", default="./lib/libyskn.so")
 ap.add_argument("--tokens", type=int, default=320)
 ap.add_argument("--max-ctx", type=int, default=8192)
 ap.add_argument("--sample", action="store_true", help="also compare with sampling (T=0.7, seed 1234)")

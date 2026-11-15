@@ -1,8 +1,8 @@
 import sys, numpy as np
-sys.path.insert(0, '/home/shi3z/yasakani-src/xe')
+sys.path.insert(0, '.')
 from ref.core import *
 M = 12
-def ld(n, dt, shape): return np.fromfile('/data/yasakani/tmp/st_%s.bin' % n, dt).reshape(shape)
+def ld(n, dt, shape): return np.fromfile('work/st_%s.bin' % n, dt).reshape(shape)
 qx = ld('qx', np.int8, (160, 16, 32)).transpose(1, 0, 2).reshape(16, H); Aw = ld('Aw', np.int32, (16, 10)).astype(np.int64)
 for name, N in (('z', 6144), ('qkv', 10240)):
     T = Tensor('layers.0.linear_attn.in_proj_' + name); w8 = np.asarray(T.w8()).reshape(N, 10, 512).astype(np.int64)

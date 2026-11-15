@@ -1,7 +1,7 @@
 # D. Generation control, draft model, sampling, public API — implementation spec
 
-Source root: `/home/shi3z/yasakani-src/yasakani` (commit c0e11b9). All `file:line` refer to it.
-Model folder: `/data/yasakani/model-speed`. Statements marked **UNCERTAIN** were not fully determined.
+Source root: `..` (commit c0e11b9). All `file:line` refer to it.
+Model folder: `models/speed`. Statements marked **UNCERTAIN** were not fully determined.
 
 Conventions: `V=248320`, `H=5120`, `pos_` = number of committed tokens in the engine, `S` = host token sequence
 (prompt + everything generated), `F = len(S)-1` = index of the *frontier* token (the newest token; it is known but has

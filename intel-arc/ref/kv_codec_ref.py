@@ -1,6 +1,6 @@
 import ctypes, struct, sys, numpy as np
 f32=np.float32
-B=open('/data/yasakani/model-speed/kvq_u5.bin','rb').read()
+B=open('models/speed/kvq_u5.bin','rb').read()
 u16=lambda o:struct.unpack_from('<H',B,o)[0]
 u32=lambda o:struct.unpack_from('<I',B,o)[0]
 NM=u16(24); OFF_M=u32(32); OFF_T=u32(36); OFF_G=u32(40)
@@ -88,7 +88,7 @@ def decode_states(words,kb=5):
         st[d]=v
     return st
 if __name__=='__main__':
-    lib=ctypes.CDLL('/home/shi3z/yasakani-src/yasakani/build/libyskn.so')
+    lib=ctypes.CDLL('../build/libyskn.so')
     rng=np.random.default_rng(1)
     groups=[0,1,3,5,82,83,96+2,106,117,119,121,123,125,127]*2
     rows=len(groups); x=np.zeros((rows,256),f32)

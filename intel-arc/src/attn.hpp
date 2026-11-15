@@ -132,7 +132,7 @@ struct AttnShared {
   }
 };
 // KV profile: $YX_KV_PROFILE, else $YSKN_TB_PROFILE (set by the Python package to the model folder's file), else the speed model's
-inline std::string attn_default_profile() { const char* e = std::getenv("YX_KV_PROFILE"); if (!e) e = std::getenv("YSKN_TB_PROFILE"); return e ? e : "/data/yasakani/model-speed/kvq_u5.bin"; }
+inline std::string attn_default_profile() { const char* e = std::getenv("YX_KV_PROFILE"); if (!e) e = std::getenv("YSKN_TB_PROFILE"); return e ? e : "models/speed/kvq_u5.bin"; }
 // one AttnShared per (engine, max_ctx), shared by the 16 layers
 inline std::shared_ptr<AttnShared> attn_shared(Engine& E, int max_ctx, const std::string& profile = attn_default_profile()) {
   static std::map<std::pair<Engine*, int>, std::weak_ptr<AttnShared>> reg; auto& w = reg[{&E, max_ctx}]; auto p = w.lock();

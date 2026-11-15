@@ -1,5 +1,5 @@
 // Full-attention layer test (src/attn.hpp) against ref/core.py; compare with tests/attn_cmp.py.
-//   attn_test chain <tag> <layer> <pos_start> <pass rows...>   layers 0..layer on the device from /data/yasakani/tmp/ids.bin (layer = 3)
+//   attn_test chain <tag> <layer> <pos_start> <pass rows...>   layers 0..layer on the device from work/ids.bin (layer = 3)
 //   attn_test unit  <tag> <layer> <pos_start> <pass rows...>   layer inputs h from <tag>_in.bin (rows used cyclically); h out = after the attention residual
 // pos_start > 0: the cache slots [0, pos_start) are loaded from <tag>_c_{kp,kps,vp,vps,v8,vs}.bin.
 // env: YX_CTX (cache rows, default 8192), YX_TIME=<reps> (time attn_forward for M = 1 and 8 at the final position), YX_NODUMP=1.
@@ -7,7 +7,7 @@
 #include <chrono>
 #include <cstdio>
 using namespace yx;
-static std::string DIR = "/data/yasakani/tmp/attn/";
+static std::string DIR = "work/attn/";
 template <class T> static std::vector<T> rd(const std::string& p) { std::ifstream f(p, std::ios::binary | std::ios::ate); if (!f) throw std::runtime_error("cannot open " + p);
   std::vector<T> v((size_t)f.tellg() / sizeof(T)); f.seekg(0); f.read((char*)v.data(), v.size() * sizeof(T)); return v; }
 template <class T> static void wr(const std::string& p, const std::vector<T>& v) { std::ofstream o(p, std::ios::binary); o.write((const char*)v.data(), v.size() * sizeof(T)); }
@@ -19,13 +19,13 @@ int main(int argc, char** argv) {
   std::vector<int> passes; for (int i = 5; i < argc; ++i) passes.push_back(atoi(argv[i]));
   const int max_ctx = getenv("YX_CTX") ? atoi(getenv("YX_CTX")) : 8192; const bool nodump = getenv("YX_NODUMP") != nullptr;
   double t0 = now();
-  Engine E("/data/yasakani/model-speed/qwen38_27b_speed.yskn", chain ? layer + 1 : 0);
-  auto sh = std::make_shared<AttnShared>(E, max_ctx, "/data/yasakani/model-speed/kvq_u5.bin");
+  Engine E("models/speed/qwen38_27b_speed.yskn", chain ? layer + 1 : 0);
+  auto sh = std::make_shared<AttnShared>(E, max_ctx, "models/speed/kvq_u5.bin");
   Attn A(E, layer, sh); E.q.wait();
   std::printf("loaded in %.1f s; layer %d ordinal %d, V %s, max_ctx %d\n", now() - t0, layer, A.ord, A.vpk ? "packed" : "INT8", max_ctx);
   { std::vector<float> t((size_t)max_ctx * 64); E.q.memcpy(t.data(), sh->rope, t.size() * 4).wait(); wr(tag + "rope.bin", t); }
   std::vector<int> ids; std::vector<float> in; float *ln1 = nullptr, *ln2 = nullptr;
-  if (chain) ids = rd<int>("/data/yasakani/tmp/ids.bin");
+  if (chain) ids = rd<int>("work/ids.bin");
   else { in = rd<float>(tag + "in.bin"); const std::string p = "layers." + std::to_string(layer) + ".";
     ln1 = upload_vec(E.q, E.C, p + "input_layernorm", H); ln2 = upload_vec(E.q, E.C, p + "post_attention_layernorm", H); }
   const int nin = chain ? (int)ids.size() : (int)(in.size() / H);
