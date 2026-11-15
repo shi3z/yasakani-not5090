@@ -1,0 +1,7 @@
+YASAKANI engine port for Intel Arc (SYCL / Level Zero)
+
+This is a derived work of YASAKANI (https://github.com/yasakani-dev/yasakani),
+Copyright 2026 the YASAKANI authors, licensed under the Apache License 2.0.
+The engine was re-implemented in SYCL ESIMD from the upstream CUDA source; the
+file format, the arithmetic and the C interface follow upstream.
+Model files are not part of this repository; see the upstream NOTICE for them.

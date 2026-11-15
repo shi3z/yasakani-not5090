@@ -1,0 +1,5 @@
+context 65536 tokens; the source text is 41209 tokens
+    prompt    prefill s  prefill t/s    gen t/s   ms/pass  tok/pass  peak MiB
+      8000        57.90          138       29.8    118.79      3.54  15844
+     30000       406.37           74       14.7    241.39      3.54  15844
+     60000      1337.57           45        7.5    402.05      3.00  15844

@@ -178,6 +178,33 @@ e.g. code 486 and story 179 tokens/s. The A6000 reaches code 207 and story 64 â€
 vs RTX 5090 ~1.8 TB/s; decode is bandwidth-bound). The prompts differ, so treat this as
 an order-of-magnitude comparison, not a controlled one.
 
+## Intel Arc Pro B60 (SYCL / Level Zero) â€” experimental
+
+[`intel-arc/`](intel-arc/) holds a separate implementation of the engine in SYCL ESIMD for the
+Intel Arc Pro B60 (Xe2, 24 GB). It builds a drop-in `libyskn.so` (`intel-arc/mklib.sh`) that the
+Python package loads with `--dll`. The speed model passes `yasakani selfcheck` 3 of 3; the quality
+model runs, with one near-tie token different from the reference in the thinking case.
+
+Same machine as the 5060 Ti above, `yasakani bench`, 512 tokens, greedy, context 65,536, tokens/s (mean of the four prompts):
+
+| | RTX 5060 Ti, speed model | Arc Pro B60, speed model | Arc Pro B60, quality model |
+|---|---:|---:|---:|
+| thinking off | 149.1 | 70.5 | 65.4 |
+| thinking on | 123.6 | 58.3 | 57.2 |
+
+Long prompts, generation tokens/s (prompt read tokens/s in parentheses):
+
+| Prompt tokens | RTX 5060 Ti, speed model | Arc Pro B60, speed model | Arc Pro B60, quality model |
+|---:|---:|---:|---:|
+| 8,000 | 99.1 (792) | 26.4 (142) | 29.8 (138) |
+| 30,000 | 96.1 (720) | 14.6 (75) | 14.7 (74) |
+| 60,000 | 76.5 (643) | 9.9 (45) | 7.5 (45) |
+
+The B60 runs at about half the speed of the 5060 Ti with short contexts and far below it with
+long ones; the attention layers of this implementation are not yet optimised for long contexts.
+Its 24 GB hold the quality model together with the draft model, which 16 GB do not.
+Details: [intel-arc/README.md](intel-arc/README.md).
+
 ## Build and run on Linux
 
 Needs a CUDA Toolkit (tested with 12.8 for sm_86 and 13.1 for sm_120), CMake >= 3.24, Ninja,
