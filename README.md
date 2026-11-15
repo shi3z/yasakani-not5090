@@ -190,7 +190,7 @@ B60 machine: the same computer as the 5060 Ti above (both cards installed; Intel
 Ubuntu 26.04), Intel oneAPI DPC++ 2026.2 on Level Zero, context 65,536 tokens (KV5 cache), greedy,
 speculative decoding on, measured November 15, 2026 with the attention layers that keep decoded
 copies of the keys and values in VRAM (4.3 GB at this context). The two runs of every prompt agree
-to within 0.2 tokens/s. The model is ready in 7 to 8 s. The 5060 Ti column is the CUDA engine with
+to within 0.2 tokens/s. The model is ready in 8 to 9 s. The 5060 Ti column is the CUDA engine with
 the speed model (the quality model with the draft model does not fit 16 GB).
 
 **Decode speed, thinking off — tokens/s (the four prompts of `yasakani bench`, 512 tokens; accepted tokens/pass in parentheses)**
