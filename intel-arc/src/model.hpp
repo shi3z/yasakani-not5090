@@ -52,8 +52,24 @@ struct Tensor {
   uint32_t* stream = nullptr; uint32_t* lut = nullptr; float* tau = nullptr; float* sg_in = nullptr; float* sg_out = nullptr;
   int64_t* part = nullptr;        // [MRmax][N], assigned by the engine
 };
+// Device memory accounting.  g_dev_bytes: bytes allocated through to_dev / Engine::dev.  g_dry: count only (no allocation, null
+// pointers) -- the engine, head and attention objects are constructed once in this mode to learn exactly how much memory a prefill
+// batch needs.  g_dev_ptrs: every real allocation, so that a failed start can be undone and a closed engine releases its memory.
+// YX_FAIL_ALLOC_GB (tests): allocations fail once this many GB are in use.
+inline size_t g_dev_bytes = 0; inline bool g_dry = false; inline std::vector<std::pair<void*, sycl::context>> g_dev_ptrs;
+inline void* dev_alloc(sycl::queue& q, size_t bytes) {
+  if (g_dry) { g_dev_bytes += bytes; return nullptr; }
+  static const double fail = std::getenv("YX_FAIL_ALLOC_GB") ? atof(std::getenv("YX_FAIL_ALLOC_GB")) * 1073741824.0 : 0.0;
+  if (fail > 0 && (double)(g_dev_bytes + bytes) > fail) throw std::runtime_error("out of device memory");
+  void* p = sycl::malloc_device(bytes, q); if (!p) throw std::runtime_error("out of device memory");
+  g_dev_bytes += bytes; g_dev_ptrs.emplace_back(p, q.get_context()); return p;
+}
+inline void dev_release(size_t from) {      // free the allocations g_dev_ptrs[from ..]
+  for (size_t i = g_dev_ptrs.size(); i > from; --i) sycl::free(g_dev_ptrs[i - 1].first, g_dev_ptrs[i - 1].second);
+  g_dev_ptrs.resize(from);
+}
 template <class T> inline T* to_dev(sycl::queue& q, const T* src, size_t n) {
-  T* d = sycl::malloc_device<T>(n, q); if (!d) throw std::runtime_error("out of device memory");
+  T* d = (T*)dev_alloc(q, n * sizeof(T)); if (!d) return nullptr;
   q.memcpy(d, src, n * sizeof(T)).wait(); return d;      // synchronous: callers pass temporaries
 }
 inline Tensor upload(sycl::queue& q, const Container& C, const std::string& name) {
@@ -61,6 +77,8 @@ inline Tensor upload(sycl::queue& q, const Container& C, const std::string& name
   T.N = t.value("physical_rows", t["rows"].get<int>()); T.Kc = t["cols"]; T.G = T.Kc / 512; T.bits = t["bits"];
   if (t.value("layout", std::string("warp")) != "warp" || T.N % 32 || T.Kc % 512) throw std::runtime_error("unsupported tensor " + name);
   const size_t words = (size_t)T.N * (T.Kc / 256) * 4 * T.bits;
+  if (g_dry) { const bool ro = t.contains("rot_out") && !t["rot_out"].is_null() && t["rot_out"].value("kind", std::string("H512")) != "none";
+    g_dev_bytes += words * 4 + 4096 * 4 + (size_t)T.N * 4 + (size_t)T.Kc * 4 + (ro ? (size_t)T.N * 4 : 0); return T; }
   T.stream = to_dev(q, (const uint32_t*)(C.base + t["stream_off"].get<uint64_t>()), words);
   const uint16_t* l16 = (const uint16_t*)(C.base + t["lut_off"].get<uint64_t>());
   float mx = 0.f; for (int i = 0; i < 8192; ++i) mx = std::max(mx, std::fabs(h2f_host(l16[i])));
@@ -80,6 +98,7 @@ inline Tensor upload(sycl::queue& q, const Container& C, const std::string& name
 }
 // bf16 vector -> float on the device
 inline float* upload_vec(sycl::queue& q, const Container& C, const std::string& name, size_t n) {
+  if (g_dry) { g_dev_bytes += n * 4; return nullptr; }
   const json& v = C.vector(name); if (v["n"].get<size_t>() != n || v.value("dtype", std::string("f16")) != "bf16") throw std::runtime_error("bad vector " + name);
   const uint16_t* p = (const uint16_t*)(C.base + v["off"].get<uint64_t>()); std::vector<float> f(n);
   for (size_t i = 0; i < n; ++i) { uint32_t u = (uint32_t)p[i] << 16; std::memcpy(&f[i], &u, 4); }

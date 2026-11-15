@@ -120,7 +120,7 @@ struct AttnShared {
   float *pm = nullptr, *pl = nullptr, *pacc = nullptr;                           // partials [MR][42][24], [MR][42][24][256]
   int* vxi = nullptr; uint8_t* vbp = nullptr;                                    // ESIMD trellis scratch per (row, group, scale, chain): xi [64], back pointers [64][16]
   // mirror path (decoded bf16 copies of K and V + XMX products): G key groups of 16, NP parts of A_PS keys
-  bool mir = false; int G = 0, NP = 0;
+  bool mir = false; int G = 0, NP = 0, NQG = 12;                                  // NQG: query groups of 8 per KV head (6 * rows / 8)
   float* sc = nullptr;                                                           // scores [4 kvh][12 query groups][G][8 queries][16 keys]
   uint32_t *pa = nullptr, *qa = nullptr;                                         // weights (bf16 pairs) [4][12][G][8 queries][8 key pairs]; queries [4][12][16 dim chunks][8 queries][8 dim pairs]
   float *pm2 = nullptr, *pl2 = nullptr, *pacc2 = nullptr;                        // partials [MR][NP][24], [MR][NP][24][256]
@@ -129,24 +129,27 @@ struct AttnShared {
     { auto t = rope_table_host(max_ctx); rope = to_dev(E.q, t.data(), t.size()); }
     { float s[256]; for (int d = 0; d < 256; ++d) s[d] = kv_sign_host(d); sg = to_dev(E.q, s, 256); }
     mult = to_dev(E.q, prof.mult, A_NM);
-    const size_t R = (size_t)MRMAX * A_NO;
+    const int MRC = E.cap; NQG = (MRC * 6 + 7) / 8;
+    const size_t R = (size_t)MRC * A_NO;
     q16 = E.dev<float>(R); gate = E.dev<float>(R); y = E.dev<float>(R); y2 = E.dev<float>(R);
-    enc_r = E.dev<float>((size_t)MRMAX * 8 * 256); enc_c = E.dev<float>(MRMAX * 8 * 4); enc_e = E.dev<float>(MRMAX * 8 * A_NM * 8);
-    enc_st = E.dev<uint8_t>((size_t)MRMAX * 8 * A_NM * 256);
-    pm = E.dev<float>(MRMAX * A_SPL * A_NH); pl = E.dev<float>(MRMAX * A_SPL * A_NH); pacc = E.dev<float>((size_t)MRMAX * A_SPL * A_NH * 256);
-    vxi = E.dev<int>((size_t)MRMAX * 8 * A_NM * 4 * 64); vbp = E.dev<uint8_t>((size_t)MRMAX * 8 * A_NM * 4 * 1024);
+    enc_r = E.dev<float>((size_t)MRC * 8 * 256); enc_c = E.dev<float>(MRC * 8 * 4); enc_e = E.dev<float>(MRC * 8 * A_NM * 8);
+    enc_st = E.dev<uint8_t>((size_t)MRC * 8 * A_NM * 256);
+    vxi = E.dev<int>((size_t)MRC * 8 * A_NM * 4 * 64); vbp = E.dev<uint8_t>((size_t)MRC * 8 * A_NM * 4 * 1024);
     G = (max_ctx + 15) / 16; NP = (max_ctx + A_PS - 1) / A_PS;
     { const char* o = std::getenv("YX_ATTN_OLD"); const char* gb = std::getenv("YX_MIRROR_GB"); const double lim = gb ? atof(gb) : 10.0;
-      const double need = 16.0 * 2 * 4 * (double)G * 8192 + 48.0 * G * (512 + 256);                  // 16 layers x (K + V) mirrors + scores + weights
+      const double need = 16.0 * 2 * 4 * (double)G * 8192 + 4.0 * NQG * G * (512 + 256);                  // 16 layers x (K + V) mirrors + scores + weights
       mir = E.fast && !(o && atoi(o)) && need <= lim * 1073741824.0; }
-    if (mir) { sc = E.dev<float>((size_t)48 * G * 128); pa = E.dev<uint32_t>((size_t)48 * G * 64); qa = E.dev<uint32_t>(48 * 16 * 64);
-      pm2 = E.dev<float>((size_t)MRMAX * NP * A_NH); pl2 = E.dev<float>((size_t)MRMAX * NP * A_NH); pacc2 = E.dev<float>((size_t)MRMAX * NP * A_NH * 256); }
+    if (!mir) { pm = E.dev<float>(MRC * A_SPL * A_NH); pl = E.dev<float>(MRC * A_SPL * A_NH); pacc = E.dev<float>((size_t)MRC * A_SPL * A_NH * 256); }      // partials of the old path only
+    if (mir) { sc = E.dev<float>((size_t)4 * NQG * G * 128); pa = E.dev<uint32_t>((size_t)4 * NQG * G * 64); qa = E.dev<uint32_t>((size_t)4 * NQG * 16 * 64);
+      pm2 = E.dev<float>((size_t)MRC * NP * A_NH); pl2 = E.dev<float>((size_t)MRC * NP * A_NH); pacc2 = E.dev<float>((size_t)MRC * NP * A_NH * 256); }
   }
 };
-// KV profile: $YX_KV_PROFILE, else $YSKN_TB_PROFILE (set by the Python package to the model folder's file), else the speed model's
-inline std::string attn_default_profile() { const char* e = std::getenv("YX_KV_PROFILE"); if (!e) e = std::getenv("YSKN_TB_PROFILE"); return e ? e : "models/speed/kvq_u5.bin"; }
+// KV profile: $YX_KV_PROFILE, else $YSKN_TB_PROFILE (set by the Python package), else kvq_u5.bin in the folder of the model file
+inline std::string attn_default_profile(const Engine& E) { const char* e = std::getenv("YX_KV_PROFILE"); if (!e) e = std::getenv("YSKN_TB_PROFILE"); if (e) return e;
+  const size_t k = E.model_path.find_last_of('/'); return (k == std::string::npos ? std::string("") : E.model_path.substr(0, k + 1)) + "kvq_u5.bin"; }
 // one AttnShared per (engine, max_ctx), shared by the 16 layers
-inline std::shared_ptr<AttnShared> attn_shared(Engine& E, int max_ctx, const std::string& profile = attn_default_profile()) {
+inline std::shared_ptr<AttnShared> attn_shared(Engine& E, int max_ctx, std::string profile = "") {
+  if (profile.empty()) profile = attn_default_profile(E);
   static std::map<std::pair<Engine*, int>, std::weak_ptr<AttnShared>> reg; auto& w = reg[{&E, max_ctx}]; auto p = w.lock();
   if (!p) { p = std::make_shared<AttnShared>(E, max_ctx, profile); w = p; }
   return p;
@@ -169,7 +172,7 @@ struct Attn {
     const std::string p = "layers." + std::to_string(layer) + ".self_attn."; sycl::queue& Q = E.q;
     q = upload(Q, E.C, p + "q_proj"); k = upload(Q, E.C, p + "k_proj"); v = upload(Q, E.C, p + "v_proj"); o = upload(Q, E.C, p + "o_proj");
     if (q.N != A_NQ || k.N != A_NKV || v.N != A_NKV || o.N != H || q.Kc != H || k.Kc != H || v.Kc != H || o.Kc != A_NO) throw std::runtime_error("unexpected attention tensor shapes");
-    q.part = E.part; k.part = E.part + (size_t)MRMAX * A_NQ; v.part = k.part + (size_t)MRMAX * A_NKV; o.part = E.part;      // q/k/v are consumed before o is launched
+    q.part = E.part; k.part = E.part + (size_t)E.cap * A_NQ; v.part = k.part + (size_t)E.cap * A_NKV; o.part = E.part;      // q/k/v are consumed before o is launched
     qn = upload_vec(Q, E.C, p + "q_norm", 256); kn = upload_vec(Q, E.C, p + "k_norm", 256);
     std::vector<float> f(8 * 5 * 256, 0.f); std::vector<int> ci(8 * 256), meta(8 * 4, 0); bool kpk = true;
     for (int g8 = 0; g8 < 8; ++g8) { const int kind = g8 >> 2, kvh = g8 & 3; const KvGroup P = sh->prof.group((ord * 4 + kvh) * 2 + kind);
@@ -236,7 +239,7 @@ struct Args {
   const int64_t *aq, *ak, *av; const float *tq, *tk, *tv, *sq, *sk, *sv, *us_in, *S, *qn, *kn, *rope, *sg, *mult, *gf, *si; const int *gci, *gmeta;
   float *q16, *gate, *y, *y2, *enc_r, *enc_c, *enc_e, *pm, *pl, *pacc, *kps, *vps, *vs, *us, *alpha; uint8_t *enc_st, *vbp; int* vxi; uint32_t *kp, *vp; int8_t *v8, *qx; int32_t* Aw;
   int M, MR, pos0, max_ctx; float eps; bool vpk;
-  const uint16_t *mk, *mv; float* sc; uint32_t *pa, *qa; int G, NP, PS; bool mir; };
+  const uint16_t *mk, *mv; float* sc; uint32_t *pa, *qa; int G, NP, PS, NQG; bool mir; int dbg; };
 
 // 1. post: one thread per (row, 512-block of the projection outputs)
 inline void post(sycl::queue& Q, const Args P) {
@@ -251,7 +254,7 @@ inline void post(sycl::queue& Q, const Args P) {
       unroll<16>([&](auto ki) { constexpr int k = decltype(ki)::value; block_store<float, 16>(go + 16 * k, x[16 + k]); });
       v_norm_rope(x, P.qn, cs, P.eps); v_rot_fwd(x, P.sg);
       unroll<16>([&](auto ki) { constexpr int k = decltype(ki)::value; x[k] = v_rbf(x[k]); block_store<float, 16>(qo + 16 * k, x[k]); });
-      if (P.mir) { const int u = tok * 6 + blk % 6; uint32_t* qo2 = P.qa + (size_t)((blk / 6) * 12 + u / 8) * 1024 + (u % 8) * 8;
+      if (P.mir) { const int u = tok * 6 + blk % 6; uint32_t* qo2 = P.qa + (size_t)((blk / 6) * P.NQG + u / 8) * 1024 + (u % 8) * 8;
         unroll<16>([&](auto ki) { constexpr int k = decltype(ki)::value; vu b = bits(x[k]) >> 16;
           const simd<uint32_t, 8> lo = b.template select<8, 2>(0), hi = b.template select<8, 2>(1); block_store<uint32_t, 8>(qo2 + k * 64, lo | (hi << 16)); }); }
       return; }
@@ -388,8 +391,8 @@ template <int QS> inline void score(sycl::queue& Q, const Args P) {
     const int s = it[0] % NPp, rr = it[0] / NPp, qs0 = (rr % NQS) * QS, kvh = rr / NQS, nq = NQ - qs0 < QS ? NQ - qs0 : QS;
     const int last = P.pos0 + P.M - 1, g0 = s * (P.PS / 16), ge0 = g0 + P.PS / 16, gE = ge0 < last / 16 + 1 ? ge0 : last / 16 + 1;
     const size_t r0 = (size_t)kvh * P.max_ctx; const float* vsc = P.vpk ? P.vps : P.vs; const vi iota(0, 1);
-    const int* KB0 = (const int*)P.mk + (size_t)kvh * P.G * 2048; const int* QA = (const int*)P.qa + (size_t)(kvh * 12 + qs0) * 1024;
-    float* SC = P.sc + (size_t)(kvh * 12 + qs0) * P.G * 128; uint32_t* PA = P.pa + (size_t)(kvh * 12 + qs0) * P.G * 64;
+    const int* KB0 = (const int*)P.mk + (size_t)kvh * P.G * 2048; const int* QA = (const int*)P.qa + (size_t)(kvh * P.NQG + qs0) * 1024;
+    float* SC = P.sc + (size_t)(kvh * P.NQG + qs0) * P.G * 128; uint32_t* PA = P.pa + (size_t)(kvh * P.NQG + qs0) * P.G * 64;
     for (int g = g0; g < gE; ++g) { const int* KB = KB0 + (size_t)g * 2048;
       simd<float, 128> acc[QS]; unroll<QS>([&](auto qi) { acc[decltype(qi)::value] = 0.f; });
       unroll<16>([&](auto ci) { constexpr int c = decltype(ci)::value; simd<int, 128> B;
@@ -416,6 +419,182 @@ template <int QS> inline void score(sycl::queue& Q, const Args P) {
       const int u = (qs0 + q) * 8 + m, row = u / 6; if (row < P.M) { const size_t oi = ((size_t)row * P.NP + s) * A_NH + kvh * 6 + u % 6;
         P.pm[oi] = mx[q][m]; P.pl[oi] = tree16v(ls[q][m]); } }); } }); });
 }
+// 4m. scores, variant with the queries in registers: one thread per (KV head, group of 8 queries, part).  The 16 query operands (64
+// registers) are loaded once, the running maximum stays in registers and the scores / weights move in 256-byte blocks, so that per
+// 16 keys the thread sends 32 loads for the keys and 5 other messages (score<QS>: about 75).  Same values as score<QS>.
+inline void score1(sycl::queue& Q, const Args P) {
+  const int NQ = (P.M * 6 + 7) / 8, NPp = (P.pos0 + P.M - 1) / P.PS + 1;
+  Q.parallel_for(sycl::range<1>((size_t)4 * NQ * NPp), [=](sycl::id<1> it) SYCL_ESIMD_KERNEL {
+    constexpr auto BF = xmx::dpas_argument_type::bf16; const float NINF = -std::numeric_limits<float>::infinity();
+    const int s = it[0] % NPp, rr = it[0] / NPp, qg = rr % NQ, kvh = rr / NQ;
+    const int last = P.pos0 + P.M - 1, g0 = s * (P.PS / 16), ge0 = g0 + P.PS / 16, gE = ge0 < last / 16 + 1 ? ge0 : last / 16 + 1;
+    const size_t r0 = (size_t)kvh * P.max_ctx; const float* vsc = P.vpk ? P.vps : P.vs; const vi iota(0, 1);
+    const int* KB0 = (const int*)P.mk + (size_t)kvh * P.G * 2048; const int* QA = (const int*)P.qa + (size_t)(kvh * P.NQG + qg) * 1024;
+    float* SC = P.sc + (size_t)(kvh * P.NQG + qg) * P.G * 128; uint32_t* PA = P.pa + (size_t)(kvh * P.NQG + qg) * P.G * 64;
+    simd<int, 64> A[16]; unroll<16>([&](auto ci) { constexpr int c = decltype(ci)::value; A[c] = block_load<int, 64>(QA + c * 64); });
+    simd<float, 128> vmax = NINF;
+    for (int g = g0; g < gE; ++g) { const int* KB = KB0 + (size_t)g * 2048; simd<float, 128> acc = 0.f;
+      unroll<16>([&](auto ci) { constexpr int c = decltype(ci)::value; simd<int, 128> B;
+        B.template select<64, 1>(0) = block_load<int, 64>(KB + c * 128); B.template select<64, 1>(64) = block_load<int, 64>(KB + c * 128 + 64);
+        acc = xmx::dpas<8, 8, float, float, int, int, BF, BF>(acc, B, A[c]); });
+      const vf ks = block_load<float, 16>(P.kps + r0 + 16 * g) * 0.0625f; const bool msk = 16 * g + 15 > P.pos0;
+      unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; vf a = acc.template select<16, 1>(16 * m); a = a * ks;
+        if (msk) { const int lim = P.pos0 + (qg * 8 + m) / 6 - 16 * g; a.merge(vf(NINF), iota > lim); }
+        acc.template select<16, 1>(16 * m) = a; });
+      vmax = (max)(vmax, acc);
+      block_store<float, 64>(SC + (size_t)g * 128, acc.template select<64, 1>(0)); block_store<float, 64>(SC + (size_t)g * 128 + 64, acc.template select<64, 1>(64)); }
+    vf mx[8], ls[8]; unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; const vf v = vmax.template select<16, 1>(16 * m); mx[m] = hmax<float>(v); ls[m] = 0.f; });
+    for (int g = g0; g < gE; ++g) { const vf vsv = block_load<float, 16>(vsc + r0 + 16 * g); simd<float, 128> sv; simd<uint32_t, 64> out;
+      sv.template select<64, 1>(0) = block_load<float, 64>(SC + (size_t)g * 128); sv.template select<64, 1>(64) = block_load<float, 64>(SC + (size_t)g * 128 + 64);
+      unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; const vf e = v_expf(vf(sv.template select<16, 1>(16 * m)) - mx[m]); ls[m] = ls[m] + e;
+        vu b = v_f2bf(e * vsv); const simd<uint32_t, 8> lo = b.template select<8, 2>(0), hi = b.template select<8, 2>(1); out.template select<8, 1>(8 * m) = lo | (hi << 16); });
+      block_store<uint32_t, 64>(PA + (size_t)g * 64, out); }
+    unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; const int u = qg * 8 + m, row = u / 6;
+      if (row < P.M) { const size_t oi = ((size_t)row * P.NP + s) * A_NH + kvh * 6 + u % 6; const float m1 = mx[m][0]; P.pm[oi] = m1; P.pl[oi] = tree16v(ls[m]); } }); });
+}
+#ifndef YX_ARG
+#define YX_ARG 4
+#endif
+constexpr int A_RG = YX_ARG;      // groups of 16 keys staged in SLM per round by score16 / vacc16 (2 barriers per round)
+// 4m. scores, work-group variant (batched queries): a work-group of 16 threads = 16 groups of 8 queries of one (KV head, part).  For each
+// group of 16 keys the work-group copies the keys (16 dim chunks, 8 KiB) to SLM once -- thread c loads chunk c -- and every thread
+// multiplies them with ITS queries, whose 16 operands stay in registers (64).  The keys are read from global memory once per 128
+// queries instead of once per 16.  Values, order and results are those of score<QS>.
+inline void score16(sycl::queue& Q, const Args P) {
+  const int NQ = (P.M * 6 + 7) / 8, NQW = (NQ + 15) / 16, NPp = (P.pos0 + P.M - 1) / P.PS + 1;
+  Q.parallel_for(sycl::nd_range<1>((size_t)4 * NQW * NPp * 16, 16), [=](sycl::nd_item<1> ndi) SYCL_ESIMD_KERNEL {
+    slm_init<A_RG * 8192>();
+    constexpr auto BF = xmx::dpas_argument_type::bf16; const float NINF = -std::numeric_limits<float>::infinity();
+    const int lid = (int)ndi.get_local_id(0), wg = (int)ndi.get_group(0);
+    // dispatch order: the work-groups that use the same keys (KV head, part) are neighbours, so that the part is read from memory once and then from the cache
+    const int rr = wg / NQW, s = rr % NPp, qg = (wg % NQW) * 16 + lid, kvh = rr / NPp; const bool on = qg < NQ;
+    const int last = P.pos0 + P.M - 1, g0 = s * (P.PS / 16), ge0 = g0 + P.PS / 16, gE = ge0 < last / 16 + 1 ? ge0 : last / 16 + 1;
+    const size_t r0 = (size_t)kvh * P.max_ctx; const float* vsc = P.vpk ? P.vps : P.vs; const vi iota(0, 1);
+    const int* KB0 = (const int*)P.mk + (size_t)kvh * P.G * 2048; const int* QA = (const int*)P.qa + (size_t)(kvh * P.NQG + (on ? qg : 0)) * 1024;
+    float* SC = P.sc + (size_t)(kvh * P.NQG + (on ? qg : 0)) * P.G * 128; uint32_t* PA = P.pa + (size_t)(kvh * P.NQG + (on ? qg : 0)) * P.G * 64;
+    simd<int, 64> A[16]; unroll<16>([&](auto ci) { constexpr int c = decltype(ci)::value; A[c] = block_load<int, 64>(QA + c * 64); });
+    simd<float, 128> vmax = NINF;
+    const bool nomul = P.dbg & 1;
+    for (int gb = g0; gb < gE; gb += A_RG) { const int ng = gE - gb < A_RG ? gE - gb : A_RG;        // a round: A_RG groups of 16 keys staged at once (2 barriers per round)
+      for (int r = 0; r < ng; ++r) { const int* KB = KB0 + (size_t)(gb + r) * 2048 + lid * 128;
+        slm_block_store<int, 64>(r * 8192 + lid * 512, block_load<int, 64>(KB)); slm_block_store<int, 64>(r * 8192 + lid * 512 + 256, block_load<int, 64>(KB + 64)); }
+      barrier();
+      if (on) for (int r = 0; r < ng; ++r) { const int g = gb + r; simd<float, 128> acc = 0.f;
+        if (!nomul) unroll<16>([&](auto ci) { constexpr int c = decltype(ci)::value; simd<int, 128> B;
+          B.template select<64, 1>(0) = slm_block_load<int, 64>(r * 8192 + c * 512); B.template select<64, 1>(64) = slm_block_load<int, 64>(r * 8192 + c * 512 + 256);
+          acc = xmx::dpas<8, 8, float, float, int, int, BF, BF>(acc, B, A[c]); });
+        const vf ks = block_load<float, 16>(P.kps + r0 + 16 * g) * 0.0625f; const bool msk = 16 * g + 15 > P.pos0;
+        unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; vf a = acc.template select<16, 1>(16 * m); a = a * ks;
+          if (msk) { const int lim = P.pos0 + (qg * 8 + m) / 6 - 16 * g; a.merge(vf(NINF), iota > lim); }
+          acc.template select<16, 1>(16 * m) = a; });
+        vmax = (max)(vmax, acc);
+        block_store<float, 64>(SC + (size_t)g * 128, acc.template select<64, 1>(0)); block_store<float, 64>(SC + (size_t)g * 128 + 64, acc.template select<64, 1>(64)); }
+      barrier(); }
+    if (!on) return;
+    if (P.dbg & 2) { unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; const int u = qg * 8 + m, row = u / 6; if (row < P.M) { const size_t oi = ((size_t)row * P.NP + s) * A_NH + kvh * 6 + u % 6; P.pm[oi] = 0.f; P.pl[oi] = 1.f; } }); return; }
+    vf mx[8], ls[8]; unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; const vf v = vmax.template select<16, 1>(16 * m); mx[m] = hmax<float>(v); ls[m] = 0.f; });
+    for (int g = g0; g < gE; ++g) { const vf vsv = block_load<float, 16>(vsc + r0 + 16 * g); simd<float, 128> sv; simd<uint32_t, 64> out;
+      sv.template select<64, 1>(0) = block_load<float, 64>(SC + (size_t)g * 128); sv.template select<64, 1>(64) = block_load<float, 64>(SC + (size_t)g * 128 + 64);
+      unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; const vf e = v_expf(vf(sv.template select<16, 1>(16 * m)) - mx[m]); ls[m] = ls[m] + e;
+        vu b = v_f2bf(e * vsv); const simd<uint32_t, 8> lo = b.template select<8, 2>(0), hi = b.template select<8, 2>(1); out.template select<8, 1>(8 * m) = lo | (hi << 16); });
+      block_store<uint32_t, 64>(PA + (size_t)g * 64, out); }
+    unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; const int u = qg * 8 + m, row = u / 6;
+      if (row < P.M) { const size_t oi = ((size_t)row * P.NP + s) * A_NH + kvh * 6 + u % 6; const float m1 = mx[m][0]; P.pm[oi] = m1; P.pl[oi] = tree16v(ls[m]); } }); });
+}
+// 4m. weighted values, work-group variant: a work-group of 16 threads = 8 groups of 8 queries x 2 halves of the 16 dim chunks.  For each
+// group of 16 keys the work-group copies the values (8 KiB, thread c loads chunk c) and the 8 weight operands to SLM once; every
+// thread adds 8 XMX products to its 8 x 8 sums in registers.  Values, order and results are those of vacc<VQ, VC>.
+inline void vacc16(sycl::queue& Q, const Args P) {
+  const int NQ = (P.M * 6 + 7) / 8, NQ8 = (NQ + 7) / 8, NPp = (P.pos0 + P.M - 1) / P.PS + 1;
+  Q.parallel_for(sycl::nd_range<1>((size_t)4 * NQ8 * NPp * 16, 16), [=](sycl::nd_item<1> ndi) SYCL_ESIMD_KERNEL {
+    slm_init<A_RG * (8192 + 2048)>();
+    constexpr auto BF = xmx::dpas_argument_type::bf16;
+    const int lid = (int)ndi.get_local_id(0), wg = (int)ndi.get_group(0), qi = lid >> 1, c0 = (lid & 1) * 8;
+    const int rr = wg / NQ8, s = rr % NPp, qg = (wg % NQ8) * 8 + qi, kvh = rr / NPp; const bool on = qg < NQ;
+    const int last = P.pos0 + P.M - 1, g0 = s * (P.PS / 16), ge0 = g0 + P.PS / 16, gE = ge0 < last / 16 + 1 ? ge0 : last / 16 + 1;
+    const int* VB0 = (const int*)P.mv + (size_t)kvh * P.G * 2048 + lid * 128; const int* PA = (const int*)P.pa + (size_t)(kvh * P.NQG + (on ? qg : 0)) * P.G * 64;
+    simd<float, 128> o[8]; unroll<8>([&](auto ci) { o[decltype(ci)::value] = 0.f; });
+    const bool nomul = P.dbg & 4;
+    for (int gb = g0; gb < gE; gb += A_RG) { const int ng = gE - gb < A_RG ? gE - gb : A_RG;
+      for (int r = 0; r < ng; ++r) { const int* VB = VB0 + (size_t)(gb + r) * 2048; const uint32_t rb = (uint32_t)r * (8192 + 2048);
+        slm_block_store<int, 64>(rb + lid * 512, block_load<int, 64>(VB)); slm_block_store<int, 64>(rb + lid * 512 + 256, block_load<int, 64>(VB + 64));
+        if (c0 == 0 && on) slm_block_store<int, 64>(rb + 8192 + qi * 256, block_load<int, 64>(PA + (size_t)(gb + r) * 64)); }
+      barrier();
+      if (on && !nomul) for (int r = 0; r < ng; ++r) { const uint32_t rb = (uint32_t)r * (8192 + 2048); const simd<int, 64> A = slm_block_load<int, 64>(rb + 8192 + qi * 256);
+        unroll<8>([&](auto ci) { constexpr int c = decltype(ci)::value; simd<int, 128> B;
+          B.template select<64, 1>(0) = slm_block_load<int, 64>(rb + (c0 + c) * 512); B.template select<64, 1>(64) = slm_block_load<int, 64>(rb + (c0 + c) * 512 + 256);
+          o[c] = xmx::dpas<8, 8, float, float, int, int, BF, BF>(o[c], B, A); }); }
+      barrier(); }
+    if (!on) return;
+    const float* MU = P.gf + (size_t)(4 + kvh) * 1280 + 512 + c0 * 16; const bool vpk = P.vpk;
+    unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; const int u = qg * 8 + m, row = u / 6;
+      if (row < P.M) { const size_t oi = ((size_t)row * P.NP + s) * A_NH + kvh * 6 + u % 6; const float l = P.pl[oi]; float* po = P.pacc + oi * 256 + c0 * 16;
+        unroll<8>([&](auto ci) { constexpr int c = decltype(ci)::value; vf v = o[c].template select<16, 1>(16 * m); if (vpk) v = v + block_load<float, 16>(MU + 16 * c) * l;
+          block_store<float, 16>(po + 16 * c, v); }); } }); });
+}
+// 4f. EXPERIMENT (YX_ATTN_FA=1): scores, online softmax and weighted values fused in one kernel; no score / weight buffers in
+// global memory.  A work-group of 48 threads serves 16 groups of 8 queries of one (KV head, part): threads 0..15 compute the scores
+// of one query group each (queries in registers), threads 16..47 the weighted values (2 threads per query group, 8 dim chunks each).
+// Per round of FA_RG groups of 16 keys: the K and V tiles go to SLM (threads 0..31 copy one chunk each); the score threads write
+// the weights (bf16) and the rescale factors to SLM; the value threads apply them.  Online softmax per query and group of 16 keys:
+// m' = max(m, max s), c = exp(m - m'), p = exp(s - m'), l = l c + sum p, o = o c + sum p v  (c = 1 exactly when the maximum
+// does not move: then nothing is rescaled).  NOT bit-identical to the default path (score16 / vacc16 use the maximum of the part).
+constexpr int FA_RG = 4;
+inline void fa48(sycl::queue& Q, const Args P) {
+  const int NQ = (P.M * 6 + 7) / 8, NQW = (NQ + 15) / 16, NPp = (P.pos0 + P.M - 1) / P.PS + 1;
+  Q.parallel_for(sycl::nd_range<1>((size_t)4 * NQW * NPp * 48, 48), [=](sycl::nd_item<1> ndi) SYCL_ESIMD_KERNEL {
+    constexpr int KO = 0, VO = FA_RG * 8192, PO = 2 * FA_RG * 8192, CO = PO + 16 * FA_RG * 256;       // SLM: K tiles, V tiles, weights [slot][round group][256], factors [slot][round group][64]
+    slm_init<CO + 16 * FA_RG * 64>();
+    constexpr auto BF = xmx::dpas_argument_type::bf16; const float NINF = -std::numeric_limits<float>::infinity();
+    const int lid = (int)ndi.get_local_id(0), wg = (int)ndi.get_group(0); const bool sc_thr = lid < 16;
+    const int slot = sc_thr ? lid : (lid - 16) >> 1, c0 = sc_thr ? 0 : ((lid - 16) & 1) * 8;
+    const int rr = wg / NQW, s = rr % NPp, qg = (wg % NQW) * 16 + slot, kvh = rr / NPp; const bool on = qg < NQ;
+    const int last = P.pos0 + P.M - 1, g0 = s * (P.PS / 16), ge0 = g0 + P.PS / 16, gE = ge0 < last / 16 + 1 ? ge0 : last / 16 + 1;
+    const size_t r0 = (size_t)kvh * P.max_ctx; const float* vsc = P.vpk ? P.vps : P.vs; const vi iota(0, 1);
+    const int* KB0 = (const int*)P.mk + (size_t)kvh * P.G * 2048; const int* VB0 = (const int*)P.mv + (size_t)kvh * P.G * 2048;
+    const int* QA = (const int*)P.qa + (size_t)(kvh * P.NQG + (on ? qg : 0)) * 1024;
+    simd<float, 128> o[8]; float mc[8], lc[8];       // o: the 8 sums of a value thread, or (bit-cast) the 16 query operands of a score thread -- one block of 64 registers for both roles
+    if (sc_thr) { unroll<16>([&](auto ci) { constexpr int c = decltype(ci)::value; o[c / 2].template bit_cast_view<int>().template select<64, 1>((c & 1) * 64) = block_load<int, 64>(QA + c * 64); });
+      unroll<8>([&](auto mi) { mc[decltype(mi)::value] = NINF; lc[decltype(mi)::value] = 0.f; }); }
+    else unroll<8>([&](auto ci) { o[decltype(ci)::value] = 0.f; });
+    for (int gb = g0; gb < gE; gb += FA_RG) { const int ng = gE - gb < FA_RG ? gE - gb : FA_RG;
+      if (lid < 32) { const int* src = (lid < 16 ? KB0 : VB0) + (size_t)gb * 2048 + (lid & 15) * 128; const uint32_t dst = (lid < 16 ? KO : VO) + (lid & 15) * 512;
+        for (int r = 0; r < ng; ++r) { slm_block_store<int, 64>(dst + r * 8192, block_load<int, 64>(src + (size_t)r * 2048)); slm_block_store<int, 64>(dst + r * 8192 + 256, block_load<int, 64>(src + (size_t)r * 2048 + 64)); } }
+      barrier();
+      if (sc_thr && on) for (int r = 0; r < ng; ++r) { const int g = gb + r; simd<float, 128> acc = 0.f;
+        unroll<16>([&](auto ci) { constexpr int c = decltype(ci)::value; simd<int, 128> B;
+          B.template select<64, 1>(0) = slm_block_load<int, 64>(KO + r * 8192 + c * 512); B.template select<64, 1>(64) = slm_block_load<int, 64>(KO + r * 8192 + c * 512 + 256);
+          const simd<int, 64> Ac = o[c / 2].template bit_cast_view<int>().template select<64, 1>((c & 1) * 64);
+          acc = xmx::dpas<8, 8, float, float, int, int, BF, BF>(acc, B, Ac); });
+        const vf ks = block_load<float, 16>(P.kps + r0 + 16 * g) * 0.0625f, vsv = block_load<float, 16>(vsc + r0 + 16 * g); const bool msk = 16 * g + 15 > P.pos0;
+        simd<uint32_t, 64> out; vf cf = 1.f;
+        unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; vf a = acc.template select<16, 1>(16 * m); a = a * ks; vm dead = iota > 16;
+          if (msk) { const int lim = P.pos0 + (qg * 8 + m) / 6 - 16 * g; dead = iota > lim; a.merge(vf(NINF), dead); }
+          const float gm = hmax<float>(a), mn = mc[m] > gm ? mc[m] : gm; float c = 1.f;
+          if (mn != mc[m]) { const vf cv = v_expf(vf(mc[m] - mn)); c = cv[0]; mc[m] = mn; }
+          vf e = v_expf(a - mn); e.merge(vf(0.f), dead);
+          lc[m] = lc[m] * c + tree16v(e); cf.template select<1, 1>(m) = c;
+          vu b = v_f2bf(e * vsv); const simd<uint32_t, 8> lo = b.template select<8, 2>(0), hi = b.template select<8, 2>(1); out.template select<8, 1>(8 * m) = lo | (hi << 16); });
+        slm_block_store<uint32_t, 64>(PO + (slot * FA_RG + r) * 256, out); slm_block_store<float, 16>(CO + (slot * FA_RG + r) * 64, cf); }
+      barrier();
+      if (!sc_thr && on) for (int r = 0; r < ng; ++r) { const simd<int, 64> Aw = slm_block_load<int, 64>(PO + (slot * FA_RG + r) * 256); const vf cf = slm_block_load<float, 16>(CO + (slot * FA_RG + r) * 64);
+        vm ne = cf != 1.f; if (ne.any()) unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; const float c = cf[m];
+          unroll<8>([&](auto ci) { constexpr int cc = decltype(ci)::value; vf t = o[cc].template select<16, 1>(16 * m); o[cc].template select<16, 1>(16 * m) = t * c; }); });
+        unroll<8>([&](auto ci) { constexpr int c = decltype(ci)::value; simd<int, 128> B;
+          B.template select<64, 1>(0) = slm_block_load<int, 64>(VO + r * 8192 + (c0 + c) * 512); B.template select<64, 1>(64) = slm_block_load<int, 64>(VO + r * 8192 + (c0 + c) * 512 + 256);
+          o[c] = xmx::dpas<8, 8, float, float, int, int, BF, BF>(o[c], B, Aw); }); }
+      barrier(); }
+    if (sc_thr && on) { unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; const int u = qg * 8 + m, row = u / 6;
+        if (row < P.M) { const size_t oi = ((size_t)row * P.NP + s) * A_NH + kvh * 6 + u % 6; P.pm[oi] = mc[m]; P.pl[oi] = lc[m]; } });
+      vf lv = 0.f; unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; lv.template select<1, 1>(m) = lc[m]; }); slm_block_store<float, 16>(CO + slot * FA_RG * 64, lv); }
+    barrier();                                                                                 // every thread of the group reaches this barrier
+    if (!sc_thr && on) { const vf lv = slm_block_load<float, 16>(CO + slot * FA_RG * 64);            // sum of p of the 8 queries (for the mean of a packed V stream)
+      const float* MU = P.gf + (size_t)(4 + kvh) * 1280 + 512 + c0 * 16; const bool vpk = P.vpk;
+      unroll<8>([&](auto mi) { constexpr int m = decltype(mi)::value; const int u = qg * 8 + m, row = u / 6;
+        if (row < P.M) { const size_t oi = ((size_t)row * P.NP + s) * A_NH + kvh * 6 + u % 6; const float l = lv[m]; float* po = P.pacc + oi * 256 + c0 * 16;
+          unroll<8>([&](auto ci) { constexpr int c = decltype(ci)::value; vf v = o[c].template select<16, 1>(16 * m); if (vpk) v = v + block_load<float, 16>(MU + 16 * c) * l;
+            block_store<float, 16>(po + 16 * c, v); }); } }); } });
+}
 // 4m. mirror path, weighted values: one thread per (KV head, VQ query groups, VC chunks of 16 dims, part).  Per 16 keys one XMX product per
 // (query group, dim chunk); the mean of a packed V stream is added as mean * sum(p).
 template <int VQ, int VC> inline void vacc(sycl::queue& Q, const Args P) {
@@ -424,7 +603,7 @@ template <int VQ, int VC> inline void vacc(sycl::queue& Q, const Args P) {
     constexpr auto BF = xmx::dpas_argument_type::bf16;
     const int s = it[0] % NPp; int rr = it[0] / NPp; const int c0 = (rr % NCS) * VC; rr /= NCS; const int qs0 = (rr % NQS) * VQ, kvh = rr / NQS, nq = NQ - qs0 < VQ ? NQ - qs0 : VQ;
     const int last = P.pos0 + P.M - 1, g0 = s * (P.PS / 16), ge0 = g0 + P.PS / 16, gE = ge0 < last / 16 + 1 ? ge0 : last / 16 + 1;
-    const int* VB0 = (const int*)P.mv + (size_t)kvh * P.G * 2048 + c0 * 128; const int* PA = (const int*)P.pa + (size_t)(kvh * 12 + qs0) * P.G * 64;
+    const int* VB0 = (const int*)P.mv + (size_t)kvh * P.G * 2048 + c0 * 128; const int* PA = (const int*)P.pa + (size_t)(kvh * P.NQG + qs0) * P.G * 64;
     simd<float, 128> o[VQ][VC]; unroll<VQ>([&](auto qi) { unroll<VC>([&](auto ci) { o[decltype(qi)::value][decltype(ci)::value] = 0.f; }); });
     for (int g = g0; g < gE; ++g) { const int* VB = VB0 + (size_t)g * 2048;
       simd<int, 64> A[VQ]; unroll<VQ>([&](auto qi) { constexpr int q = decltype(qi)::value; if (q < nq) A[q] = block_load<int, 64>(PA + ((size_t)q * P.G + g) * 64); });
@@ -464,10 +643,10 @@ inline void combine(sycl::queue& Q, const Args P) {
 // Out: A.o.part / E.us of o_proj, ready for E.res_norm(&A.o, M, ln2, gate.sg_in, false).
 inline void attn_forward(Engine& E, Attn& A, int M, int pos0) {
   AttnShared& W = *A.sh; sycl::queue& Q = E.q; const int MR = Engine::mr_of(M), max_ctx = A.max_ctx; const float e = E.eps; const bool vpk = A.vpk;
-  if (M < 1 || M > MRMAX || pos0 < 0 || pos0 + M > max_ctx) throw std::runtime_error("attn_forward: rows outside the cache");
+  if (M < 1 || M > E.cap || pos0 < 0 || pos0 + M > max_ctx) throw std::runtime_error("attn_forward: rows outside the cache");
   auto stamp = [&](int i) { if (attn_prof) { Q.wait(); attn_prof[i] = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); } };
   stamp(0);
-  E.gemm_group({&A.q, &A.k, &A.v}, M); stamp(1);
+  E.gemm_group({&A.q, &A.k, &A.v}, M); stamp(1); E.mark("attn: GEMM q+k+v");
   float *q16 = W.q16, *gate = W.gate, *enc_r = W.enc_r, *enc_c = W.enc_c, *enc_e = W.enc_e, *pm = W.pm, *pl = W.pl, *pacc = W.pacc; uint8_t* enc_st = W.enc_st;
   const float *rope = W.rope, *sg = W.sg, *mult = W.mult, *gf = A.gf; const int *gci = A.gci, *gmeta = A.gmeta;
   uint32_t *kp = A.kp, *vp = A.vp; float *kps = A.kps, *vps = A.vps, *vs = A.vs; int8_t* v8 = A.v8;
@@ -479,7 +658,7 @@ inline void attn_forward(Engine& E, Attn& A, int M, int pos0) {
     P.q16 = q16; P.gate = gate; P.y = W.y; P.y2 = W.y2; P.enc_r = enc_r; P.enc_c = enc_c; P.enc_e = enc_e; P.pm = pm; P.pl = pl; P.pacc = pacc; P.kps = kps; P.vps = vps; P.vs = vs;
     P.us = E.us; P.alpha = E.alpha; P.enc_st = enc_st; P.vbp = W.vbp; P.vxi = W.vxi; P.kp = kp; P.vp = vp; P.v8 = v8; P.qx = E.qx; P.Aw = E.Aw;
     P.M = M; P.MR = MR; P.pos0 = pos0; P.max_ctx = max_ctx; P.eps = e; P.vpk = vpk;
-    P.mk = A.mk; P.mv = A.mv; P.sc = W.sc; P.pa = W.pa; P.qa = W.qa; P.G = W.G; P.NP = W.NP; P.PS = A_PS; P.mir = W.mir;
+    P.mk = A.mk; P.mv = A.mv; P.sc = W.sc; P.pa = W.pa; P.qa = W.qa; P.G = W.G; P.NP = W.NP; P.PS = A_PS; P.NQG = W.NQG; P.mir = W.mir; { static const int dbg = std::getenv("YX_ADBG") ? atoi(std::getenv("YX_ADBG")) : 0; P.dbg = dbg; }      // tests: 1 = score without the products, 2 = without the softmax sweep, 4 = values without the products (wrong results)
     if (W.mir) { P.pm = W.pm2; P.pl = W.pl2; P.pacc = W.pacc2; } }
   // 1. post: projection outputs -> q16, gate, rotated K / V rows -> INT8 row -> encoder residual
   if (fast) ak::post(Q, P); else { const int64_t *aq = A.q.part, *ak = A.k.part, *av = A.v.part; const float *tq = A.q.tau, *tk = A.k.tau, *tv = A.v.tau, *sq = A.q.sg_out, *sk = A.k.sg_out, *sv = A.v.sg_out;
@@ -533,7 +712,7 @@ inline void attn_forward(Engine& E, Attn& A, int M, int pos0) {
     uint8_t* so = enc_st + ((size_t)tg * A_NM + mi) * 256 + ch * 64; float dd[64];
     for (int t = 63; t >= 0; --t) { so[t] = (uint8_t)stt; const float d = r[t] - cdec[stt] * s; dd[t] = d * d; stt = ((int)bp[t * 8 + (stt >> 5)] << 3) | (stt >> 5); }
     float* eo = enc_e + ((size_t)tg * A_NM + mi) * 8 + ch * 2; eo[0] = xor_tree32(dd); eo[1] = xor_tree32(dd + 32); });
-  stamp(3);
+  stamp(3); E.mark("attn: post + trellis encode");
 
   // 3. select the best scale; pack (or store8 of the reconstruction for an unpacked V stream) into the cache
   Q.parallel_for(sycl::range<1>(M * 8), [=](sycl::id<1> it) { const int tg = it[0], tok = tg >> 3, g8 = tg & 7, kind = g8 >> 2, kvh = g8 & 3;
@@ -565,12 +744,15 @@ inline void attn_forward(Engine& E, Attn& A, int M, int pos0) {
     vs[row] = sc;
     if (mir) { const int p = pos0 + tok, jl = p & 15; uint16_t* mo = mvp + ((size_t)kvh * Gn + (p >> 4)) * 4096;
       for (int d = 0; d < 256; ++d) mo[(((d >> 4) * 8 + (jl >> 1)) * 16 + (d & 15)) * 2 + (jl & 1)] = (uint16_t)(sycl::bit_cast<uint32_t>(t[d]) >> 16); } });
-  stamp(4);
+  stamp(4); E.mark("attn: select + mirror write");
 
   // 4. partial softmax of one (row, query head, split)
-  if (fast && W.mir) { static const int cfg = std::getenv("YX_SV") ? atoi(std::getenv("YX_SV")) : 224; const int qs = cfg / 100, vq = cfg / 10 % 10, vc = cfg % 10;
-    if (qs == 1) ak::score<1>(Q, P); else if (qs == 2) ak::score<2>(Q, P); else ak::score<4>(Q, P);
-    if (vq == 1 && vc == 4) ak::vacc<1, 4>(Q, P); else if (vq == 1) ak::vacc<1, 8>(Q, P); else if (vq == 2 && vc == 2) ak::vacc<2, 2>(Q, P); else if (vq == 2) ak::vacc<2, 4>(Q, P); else ak::vacc<4, 2>(Q, P); }
+  static const bool fa = std::getenv("YX_ATTN_FA") && atoi(std::getenv("YX_ATTN_FA"));
+  if (fast && W.mir && fa) ak::fa48(Q, P);
+  else if (fast && W.mir) { static const int cfg = std::getenv("YX_SV") ? atoi(std::getenv("YX_SV")) : 550; const int qs = cfg / 100, vq = cfg / 10 % 10, vc = cfg % 10;  // digits: score kernel (5 = work-group), value kernel (5 = work-group) and its dim chunks
+    if (qs == 5) ak::score16(Q, P); else if (qs == 3) ak::score1(Q, P); else if (qs == 1) ak::score<1>(Q, P); else if (qs == 2) ak::score<2>(Q, P); else ak::score<4>(Q, P);
+    E.mark("attn: scores (K load, QxK, softmax)");
+    if (vq == 5) ak::vacc16(Q, P); else if (vq == 1 && vc == 4) ak::vacc<1, 4>(Q, P); else if (vq == 1) ak::vacc<1, 8>(Q, P); else if (vq == 2 && vc == 2) ak::vacc<2, 2>(Q, P); else if (vq == 2) ak::vacc<2, 4>(Q, P); else ak::vacc<4, 2>(Q, P); }
   else if (fast) { static const int ng = std::getenv("YX_ATTN_NG") ? atoi(std::getenv("YX_ATTN_NG")) : 0; const int NG = ng ? ng : (M <= 2 ? 1 : 3);     // query heads per thread (measured: 1 is best for M = 1, 3 for M = 8)
     if (NG == 1) ak::attend<1>(Q, P); else if (NG == 2) ak::attend<2>(Q, P); else if (NG == 3) ak::attend<3>(Q, P); else ak::attend<6>(Q, P); }
   else
@@ -616,7 +798,7 @@ inline void attn_forward(Engine& E, Attn& A, int M, int pos0) {
       else { const int8_t* vv = v8 + (r0 + own) * 256; for (int d = 0; d < 256; ++d) o[d] = o[d] * c + pv * (float)vv[d]; } }
     if (vpk) { const float* mu = GV + 512; for (int d = 0; d < 256; ++d) o[d] = o[d] + l * mu[d]; }
     pm[oi] = m; pl[oi] = l; float* po = pacc + oi * 256; for (int d = 0; d < 256; ++d) po[d] = o[d]; });
-  stamp(5);
+  stamp(5); E.mark("attn: values (V load, PxV, write)");
 
   // 5. combine the splits, inverse rotation, gate, quantised input of o_proj
   if (fast) { ak::combine(Q, P); E.aw_ready = true; } else { float *yo = W.y, *y2o = W.y2, *al = E.alpha; int8_t* qq = E.qx; const float* si = A.o.sg_in;
@@ -632,6 +814,6 @@ inline void attn_forward(Engine& E, Attn& A, int M, int pos0) {
         const size_t e0 = (size_t)(tok * A_NH + hd) * 256;
         for (int d = 0; d < 256; ++d) { const float y = rbf(O[d]), y2 = rbf(y * rbf(pm_sigmoid(gate[e0 + d]))); yo[e0 + d] = y; y2o[e0 + d] = y2; O[d] = y2 * si[hd * 256 + d]; } }
       a8_tail(buf, qq, al, MR, tok, blk, 12); }); }
-  E.gemm_group({&A.o}, M); stamp(6);
+  E.mark("attn: combine"); E.gemm_group({&A.o}, M); stamp(6); E.mark("attn: GEMM o");
 }
 }  // namespace yx

@@ -1,0 +1,63 @@
+# lut_variants on Intel(R) Arc(TM) Pro B60 Graphics
+section,primitive,pattern,table_bytes,threads,iters,ms,G_lookups_per_s,ns_per_gather16_in_thread
+micro,none,random,16384,640,4096,0.1334,314.44,32.57
+micro,none,blocked,16384,640,4096,0.1691,248.08,41.28
+micro,none,const,16384,640,4096,0.1586,264.42,38.73
+micro,slm_gather,random,16384,640,4096,0.2061,203.48,50.33
+micro,slm_gather,blocked,16384,640,4096,0.2201,190.59,53.73
+micro,slm_gather,const,16384,640,4096,0.2224,188.61,54.29
+micro,usm_gather,random,16384,640,4096,0.3077,136.31,75.12
+micro,usm_gather,blocked,16384,640,4096,0.2865,146.41,69.94
+micro,usm_gather,const,16384,640,4096,0.2531,165.70,61.80
+micro,usm_gather,random,1048576,640,4096,0.8124,51.63,198.34
+micro,usm_gather,blocked,1048576,640,4096,0.5377,78.00,131.29
+micro,none 8 lanes/iteration,random,16384,640,4096,0.1416,148.07,34.58
+micro,none 32 lanes/iteration,random,16384,640,4096,0.1695,494.77,41.39
+micro,slm_gather 8 lanes/message,random,16384,640,4096,0.2016,104.03,49.21
+micro,slm_gather 16 lanes/message,random,16384,640,4096,0.2067,202.92,50.46
+micro,slm_gather 32 lanes/message,random,16384,640,4096,0.2589,323.97,63.22
+micro,usm_gather 8 lanes/message,random,16384,640,4096,0.2911,72.04,71.07
+micro,usm_gather 16 lanes/message,random,16384,640,4096,0.3086,135.91,75.34
+micro,usm_gather 32 lanes/message,random,16384,640,4096,0.5549,151.18,135.47
+micro,iselect(simd<u16,TN>),random,64,640,4096,0.3683,113.89,89.91
+micro,iselect(simd<u16,TN>),random,512,640,4096,0.3685,113.81,89.97
+micro,iselect(simd<u16,TN>),random,2048,640,4096,0.3682,113.90,89.90
+micro,iselect(simd<u16,TN>),random,4096,640,4096,0.3791,110.63,92.56
+micro,none,random,16384,4096,4096,0.5957,450.63,145.43
+micro,none,blocked,16384,4096,4096,0.7432,361.21,181.44
+micro,none,const,16384,4096,4096,0.6537,410.67,159.58
+micro,slm_gather,random,16384,4096,4096,0.8494,316.03,207.38
+micro,slm_gather,blocked,16384,4096,4096,0.9223,291.06,225.16
+micro,slm_gather,const,16384,4096,4096,0.9283,289.18,226.63
+micro,usm_gather,random,16384,4096,4096,1.6289,164.80,397.68
+micro,usm_gather,blocked,16384,4096,4096,1.1684,229.74,285.26
+micro,usm_gather,const,16384,4096,4096,1.0160,264.21,248.05
+micro,usm_gather,random,1048576,4096,4096,6.0825,44.13,1484.98
+micro,usm_gather,blocked,1048576,4096,4096,2.0512,130.86,500.79
+micro,none 8 lanes/iteration,random,16384,4096,4096,0.5817,230.74,142.01
+micro,none 32 lanes/iteration,random,16384,4096,4096,0.8413,638.12,205.40
+micro,slm_gather 8 lanes/message,random,16384,4096,4096,0.8090,165.90,197.52
+micro,slm_gather 16 lanes/message,random,16384,4096,4096,0.8493,316.07,207.35
+micro,slm_gather 32 lanes/message,random,16384,4096,4096,1.3801,389.00,336.95
+micro,usm_gather 8 lanes/message,random,16384,4096,4096,1.1587,115.83,282.89
+micro,usm_gather 16 lanes/message,random,16384,4096,4096,1.6292,164.77,397.75
+micro,usm_gather 32 lanes/message,random,16384,4096,4096,3.0739,174.65,750.48
+micro,iselect(simd<u16,TN>),random,64,4096,4096,2.3882,112.40,583.07
+micro,iselect(simd<u16,TN>),random,512,4096,4096,2.3899,112.32,583.47
+micro,iselect(simd<u16,TN>),random,2048,4096,4096,2.3838,112.61,581.99
+micro,iselect(simd<u16,TN>),random,4096,4096,4096,2.4260,110.65,592.29
+section,lookup,code_stream,ms_queued,ms_sync,Gweights_per_s,check
+kernel,none (state bits as weights),random,0.1833,0.1906,972.5,-
+kernel,slm gather (engine),random,0.2950,0.3024,604.3,reference
+kernel,slm gather (engine),all zero (one entry),0.1813,0.1892,983.0,-
+kernel,none (state bits as weights),all zero (one entry),0.1512,0.1590,1179.3,-
+kernel,none (state bits as weights),all ones (one entry),0.1512,0.1590,1179.3,-
+kernel,none (state bits as weights),same code in all rows of a block,0.1577,0.1648,1130.2,-
+kernel,slm gather (engine),all ones (one entry),0.1816,0.1892,981.8,-
+kernel,slm gather (engine),same code in all rows of a block,0.2137,0.2214,834.2,-
+kernel,slm gather, 32 lanes per message,random,0.2981,0.3058,598.0,same sums as slm
+kernel,slm gather, 32 lanes per message,same code in all rows of a block,0.1997,0.2073,892.5,-
+kernel,usm gather 16 KiB,random,0.7735,0.7816,230.4,same sums as slm
+kernel,usm gather 16 KiB,all zero (one entry),0.2321,0.2399,768.1,-
+kernel,usm gather 1 MiB pair table (4 weights/gather),random,1.0733,1.0797,166.1,same sums as slm
+kernel,usm gather 1 MiB pair table (4 weights/gather),all zero (one entry),0.1197,0.1267,1489.4,-

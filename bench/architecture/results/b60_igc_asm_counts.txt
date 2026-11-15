@@ -1,0 +1,2325 @@
+# IGC (Xe2) assembly instruction counts of the gemm_stages kernels; produced by scripts/igc_asm_count.py from a dump with IGC_ShaderDumpEnable=1
+# kernel names: k_small<BITS, rows, stage 0..6 = A..G[, 1 = planar codes, 2 = planar + direct offsets, 3 = 2 + two tables]>, k_big<BITS, TR (8*TR rows per thread), stage>
+# the largest basic block is the unrolled body of one 256-column half block = 4096 weights (16 rows x 256 columns)
+== ZTSZ7k_smallILi8ELi8ELi5ELi1EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 996
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B010 (unrolled loop body): 781 instructions
+    shift              264
+    and_or_xor         231
+    slm_gather         128
+    mov                96
+    sync               25
+    usm_block_load     16
+    add_sub            10
+    dpas               8
+    mul                2
+    branch             1
+    widths: 1-wide x45, 16-wide x709, 2-wide x1, ?-wide x26
+  whole kernel: 996 instructions
+    shift              285
+    and_or_xor         237
+    mov                173
+    slm_gather         128
+    add_sub            47
+    mul                33
+    sync               28
+    usm_block_load     20
+    branch             8
+    dpas               8
+    usm_gather         8
+    usm_store          8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x171, 16-wide x775, 2-wide x5, 32-wide x4, 4-wide x2, 8-wide x1, ?-wide x38
+== ZTSZ7k_smallILi6ELi1ELi1ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 774
+  RA: type	GRAPH_COLORING_SPILL_FF_BC_RA
+  //.spill size 704
+  //.spill GRF est. ref count 29
+  largest basic block B009 (unrolled loop body): 704 instructions
+    shift              325
+    and_or_xor         161
+    mov                115
+    add_sub            75
+    scratch_spill      11
+    usm_block_load     6
+    scratch_fill       4
+    mul                3
+    sync               3
+    branch             1
+    widths: 1-wide x43, 16-wide x262, 2-wide x1, 8-wide x394, ?-wide x4
+  whole kernel: 774 instructions
+    shift              333
+    and_or_xor         168
+    mov                135
+    add_sub            82
+    scratch_spill      11
+    usm_block_load     9
+    branch             7
+    cmp_sel            6
+    mul                6
+    sync               5
+    scratch_fill       4
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x94, 16-wide x266, 2-wide x5, 8-wide x395, ?-wide x14
+== ZTSZ7k_smallILi6ELi16ELi6ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1495
+  RA: type	LOCAL_FIRST_FIT_BC_RA
+  largest basic block B010 (unrolled loop body): 1032 instructions
+    shift              428
+    and_or_xor         241
+    mov                162
+    slm_gather         128
+    usm_block_load     22
+    sync               19
+    dpas               16
+    add_sub            12
+    mul                3
+    branch             1
+    widths: 1-wide x45, 16-wide x596, 2-wide x1, 8-wide x370, ?-wide x20
+  whole kernel: 1495 instructions
+    shift              459
+    mov                342
+    and_or_xor         247
+    slm_gather         128
+    mul                103
+    add_sub            82
+    usm_gather         32
+    usm_block_load     26
+    sync               23
+    dpas               16
+    usm_store          16
+    branch             8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x285, 16-wide x791, 2-wide x5, 32-wide x8, 8-wide x373, ?-wide x33
+== ZTSZ5k_bigILi6ELi8ELi5EEN4sycl3_V15eventERNS1_5queueE4BufsiiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 5162
+  RA: type	GRAPH_COLORING_SPILL_FF_RA
+  //.spill size 4032
+  //.spill GRF est. ref count 1496
+  largest basic block B010 (unrolled loop body): 2427 instructions
+    dpas               512
+    shift              429
+    sync               337
+    mov                303
+    and_or_xor         241
+    scratch_spill      211
+    scratch_fill       181
+    slm_gather         128
+    slm_block_load     64
+    add_sub            11
+    usm_block_load     6
+    mul                3
+    branch             1
+    widths: 1-wide x549, 16-wide x1118, 2-wide x1, 8-wide x421, ?-wide x338
+  whole kernel: 5161 instructions
+    mov                1114
+    mul                784
+    shift              573
+    dpas               512
+    sync               428
+    add_sub            412
+    and_or_xor         313
+    scratch_fill       232
+    scratch_spill      221
+    slm_gather         128
+    usm_gather         127
+    usm_store          127
+    usm_block_load     82
+    slm_block_load     64
+    branch             11
+    cmp_sel            10
+    slm_store          9
+    send_other         7
+    mad_fp             4
+    other:nop          2
+    math               1
+    widths: 1-wide x2396, 16-wide x1895, 2-wide x7, 8-wide x424, ?-wide x439
+== ZTSZ7k_smallILi8ELi1ELi4ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1004
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B009 (unrolled loop body): 931 instructions
+    shift              423
+    and_or_xor         231
+    slm_gather         128
+    mov                98
+    usm_block_load     16
+    sync               14
+    add_sub            10
+    dpas               8
+    mul                2
+    branch             1
+    widths: 1-wide x45, 16-wide x548, 2-wide x1, 8-wide x322, ?-wide x15
+  whole kernel: 1004 instructions
+    shift              431
+    and_or_xor         237
+    slm_gather         128
+    mov                120
+    usm_block_load     20
+    add_sub            18
+    sync               16
+    dpas               8
+    branch             7
+    cmp_sel            6
+    mul                5
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x95, 16-wide x556, 2-wide x5, 8-wide x323, ?-wide x25
+== ZTSZ7k_smallILi6ELi8ELi5ELi3EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1042
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B010 (unrolled loop body): 738 instructions
+    mov                195
+    shift              166
+    slm_gather         128
+    and_or_xor         123
+    sync               88
+    usm_block_load     14
+    add_sub            12
+    dpas               8
+    mul                3
+    branch             1
+    widths: 1-wide x37, 16-wide x611, 2-wide x1, ?-wide x89
+  whole kernel: 955 instructions
+    mov                272
+    shift              188
+    and_or_xor         130
+    slm_gather         128
+    sync               90
+    add_sub            49
+    mul                34
+    usm_block_load     18
+    branch             8
+    dpas               8
+    usm_gather         8
+    usm_store          8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    slm_store          2
+    mad_fp             1
+    widths: 1-wide x164, 16-wide x677, 2-wide x5, 32-wide x6, 4-wide x2, 8-wide x1, ?-wide x100
+== ZTSZ7k_smallILi6ELi1ELi5ELi1EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 915
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B009 (unrolled loop body): 834 instructions
+    shift              269
+    and_or_xor         233
+    mov                144
+    slm_gather         128
+    sync               22
+    usm_block_load     14
+    add_sub            12
+    dpas               8
+    mul                3
+    branch             1
+    widths: 1-wide x37, 16-wide x773, 2-wide x1, ?-wide x23
+  whole kernel: 915 instructions
+    shift              278
+    and_or_xor         239
+    mov                168
+    slm_gather         128
+    sync               25
+    add_sub            21
+    usm_block_load     18
+    mul                8
+    dpas               8
+    branch             7
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_gather         1
+    usm_store          1
+    widths: 1-wide x90, 16-wide x785, 2-wide x5, 8-wide x1, ?-wide x34
+== ZTSZ7k_smallILi6ELi1ELi3ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1083
+  RA: type	LOCAL_ROUND_ROBIN_RA
+  largest basic block B009 (unrolled loop body): 983 instructions
+    shift              427
+    and_or_xor         241
+    mov                162
+    slm_gather         128
+    add_sub            11
+    usm_block_load     6
+    sync               4
+    mul                3
+    branch             1
+    widths: 1-wide x27, 16-wide x580, 2-wide x1, 8-wide x370, ?-wide x5
+  whole kernel: 1051 instructions
+    shift              435
+    and_or_xor         247
+    mov                181
+    slm_gather         128
+    add_sub            18
+    usm_block_load     9
+    branch             7
+    cmp_sel            6
+    sync               6
+    mul                6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x76, 16-wide x584, 2-wide x5, 8-wide x371, ?-wide x15
+== ZTSZ7k_smallILi6ELi16ELi5ELi1EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1232
+  RA: type	LOCAL_FIRST_FIT_BC_RA
+  largest basic block B010 (unrolled loop body): 853 instructions
+    shift              269
+    and_or_xor         233
+    mov                144
+    slm_gather         128
+    sync               25
+    usm_block_load     22
+    dpas               16
+    add_sub            12
+    mul                3
+    branch             1
+    widths: 1-wide x45, 16-wide x781, 2-wide x1, ?-wide x26
+  whole kernel: 1232 instructions
+    shift              300
+    mov                290
+    and_or_xor         239
+    slm_gather         128
+    add_sub            81
+    mul                71
+    sync               28
+    usm_block_load     26
+    dpas               16
+    usm_gather         16
+    usm_store          16
+    branch             8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x267, 16-wide x911, 2-wide x5, 32-wide x8, 8-wide x3, ?-wide x38
+== ZTSZ7k_smallILi8ELi16ELi6ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1416
+  RA: type	HYBRID_BC_RA
+  largest basic block B010 (unrolled loop body): 953 instructions
+    shift              423
+    and_or_xor         231
+    slm_gather         128
+    mov                98
+    usm_block_load     24
+    sync               20
+    dpas               16
+    add_sub            10
+    mul                2
+    branch             1
+    widths: 1-wide x53, 16-wide x556, 2-wide x1, 8-wide x322, ?-wide x21
+  whole kernel: 1416 instructions
+    shift              454
+    mov                278
+    and_or_xor         237
+    slm_gather         128
+    mul                102
+    add_sub            80
+    usm_gather         32
+    usm_block_load     28
+    sync               24
+    dpas               16
+    usm_store          16
+    branch             8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x293, 16-wide x751, 2-wide x5, 32-wide x8, 8-wide x325, ?-wide x34
+== ZTSZ7k_smallILi8ELi1ELi1ELi1EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 490
+  RA: type	LOCAL_FIRST_FIT_BC_RA
+  largest basic block B009 (unrolled loop body): 422 instructions
+    shift              168
+    and_or_xor         103
+    add_sub            74
+    mov                66
+    usm_block_load     8
+    mul                2
+    branch             1
+    widths: 1-wide x35, 16-wide x385, 2-wide x1, ?-wide x1
+  whole kernel: 490 instructions
+    shift              176
+    and_or_xor         109
+    mov                85
+    add_sub            81
+    usm_block_load     11
+    branch             7
+    cmp_sel            6
+    mul                5
+    send_other         3
+    other:nop          2
+    sync               2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x84, 16-wide x389, 2-wide x5, 8-wide x1, ?-wide x11
+== ZTSZ7k_smallILi6ELi8ELi6ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1280
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B010 (unrolled loop body): 1020 instructions
+    shift              428
+    and_or_xor         241
+    mov                162
+    slm_gather         128
+    sync               23
+    usm_block_load     14
+    add_sub            12
+    dpas               8
+    mul                3
+    branch             1
+    widths: 1-wide x37, 16-wide x588, 2-wide x1, 8-wide x370, ?-wide x24
+  whole kernel: 1280 instructions
+    shift              449
+    mov                257
+    and_or_xor         247
+    slm_gather         128
+    add_sub            50
+    mul                50
+    sync               28
+    usm_block_load     18
+    usm_gather         16
+    branch             8
+    dpas               8
+    usm_store          8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x173, 16-wide x687, 2-wide x5, 32-wide x4, 4-wide x2, 8-wide x371, ?-wide x38
+== ZTSZ7k_smallILi8ELi1ELi1ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 715
+  RA: type	LOCAL_FIRST_FIT_BC_RA
+  largest basic block B009 (unrolled loop body): 647 instructions
+    shift              327
+    mov                132
+    and_or_xor         103
+    add_sub            74
+    usm_block_load     8
+    mul                2
+    branch             1
+    widths: 1-wide x35, 16-wide x222, 2-wide x1, 8-wide x388, ?-wide x1
+  whole kernel: 715 instructions
+    shift              335
+    mov                151
+    and_or_xor         109
+    add_sub            81
+    usm_block_load     11
+    branch             7
+    cmp_sel            6
+    mul                5
+    send_other         3
+    other:nop          2
+    sync               2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x84, 16-wide x226, 2-wide x5, 8-wide x389, ?-wide x11
+== ZTSZ7k_smallILi6ELi1ELi2ELi1EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 843
+  RA: type	GRAPH_COLORING_SPILL_FF_RA
+  //.spill size 832
+  //.spill GRF est. ref count 44
+  largest basic block B009 (unrolled loop body): 773 instructions
+    shift              205
+    and_or_xor         169
+    mov                142
+    slm_gather         128
+    add_sub            75
+    sync               27
+    scratch_spill      13
+    usm_block_load     6
+    scratch_fill       4
+    mul                3
+    branch             1
+    widths: 1-wide x45, 16-wide x696, 2-wide x1, 8-wide x3, ?-wide x28
+  whole kernel: 843 instructions
+    shift              213
+    and_or_xor         176
+    mov                162
+    slm_gather         128
+    add_sub            82
+    sync               29
+    scratch_spill      13
+    usm_block_load     9
+    branch             7
+    cmp_sel            6
+    mul                6
+    scratch_fill       4
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x96, 16-wide x700, 2-wide x5, 8-wide x4, ?-wide x38
+== ZTSZ7k_smallILi8ELi16ELi4ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1158
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B009 (unrolled loop body): 962 instructions
+    shift              423
+    and_or_xor         231
+    slm_gather         128
+    mov                98
+    sync               29
+    usm_block_load     24
+    dpas               16
+    add_sub            10
+    mul                2
+    branch             1
+    widths: 1-wide x53, 16-wide x556, 2-wide x1, 8-wide x322, ?-wide x30
+  whole kernel: 1158 instructions
+    shift              435
+    and_or_xor         237
+    mov                165
+    slm_gather         128
+    add_sub            55
+    sync               31
+    usm_block_load     28
+    mul                27
+    dpas               16
+    usm_store          16
+    branch             7
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x207, 16-wide x559, 2-wide x5, 32-wide x24, 8-wide x323, ?-wide x40
+== ZTSZ7k_smallILi8ELi1ELi3ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1001
+  RA: type	LOCAL_ROUND_ROBIN_RA
+  largest basic block B009 (unrolled loop body): 901 instructions
+    shift              422
+    and_or_xor         231
+    slm_gather         128
+    mov                98
+    add_sub            9
+    usm_block_load     8
+    mul                2
+    sync               2
+    branch             1
+    widths: 1-wide x35, 16-wide x540, 2-wide x1, 8-wide x322, ?-wide x3
+  whole kernel: 969 instructions
+    shift              430
+    and_or_xor         237
+    slm_gather         128
+    mov                117
+    add_sub            16
+    usm_block_load     11
+    branch             7
+    cmp_sel            6
+    mul                5
+    sync               4
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x84, 16-wide x544, 2-wide x5, 8-wide x323, ?-wide x13
+== ZTSZ7k_smallILi8ELi1ELi6ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1023
+  RA: type	LOCAL_FIRST_FIT_BC_RA
+  largest basic block B010 (unrolled loop body): 932 instructions
+    shift              423
+    and_or_xor         231
+    slm_gather         128
+    mov                98
+    usm_block_load     16
+    sync               15
+    add_sub            10
+    dpas               8
+    mul                2
+    branch             1
+    widths: 1-wide x45, 16-wide x548, 2-wide x1, 8-wide x322, ?-wide x16
+  whole kernel: 1023 instructions
+    shift              432
+    and_or_xor         237
+    slm_gather         128
+    mov                126
+    add_sub            20
+    usm_block_load     20
+    sync               19
+    mul                9
+    branch             8
+    dpas               8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    usm_gather         2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x101, 16-wide x565, 2-wide x5, 8-wide x323, ?-wide x29
+== ZTSZ7k_smallILi8ELi8ELi5ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1151
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B010 (unrolled loop body): 936 instructions
+    shift              423
+    and_or_xor         231
+    slm_gather         128
+    mov                98
+    sync               19
+    usm_block_load     16
+    add_sub            10
+    dpas               8
+    mul                2
+    branch             1
+    widths: 1-wide x45, 16-wide x548, 2-wide x1, 8-wide x322, ?-wide x20
+  whole kernel: 1151 instructions
+    shift              444
+    and_or_xor         237
+    mov                175
+    slm_gather         128
+    add_sub            47
+    mul                33
+    sync               22
+    usm_block_load     20
+    branch             8
+    dpas               8
+    usm_gather         8
+    usm_store          8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x171, 16-wide x614, 2-wide x5, 32-wide x4, 4-wide x2, 8-wide x323, ?-wide x32
+== ZTSZ5k_bigILi6ELi4ELi4EEN4sycl3_V15eventERNS1_5queueE4BufsiiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 2089
+  RA: type	HYBRID_BC_RA
+  largest basic block B010 (unrolled loop body): 1350 instructions
+    shift              428
+    and_or_xor         273
+    dpas               256
+    mov                162
+    slm_gather         128
+    sync               50
+    slm_block_load     32
+    add_sub            11
+    usm_block_load     6
+    mul                3
+    branch             1
+    widths: 1-wide x92, 16-wide x836, 2-wide x1, 8-wide x370, ?-wide x51
+  whole kernel: 2088 instructions
+    shift              475
+    mov                336
+    and_or_xor         312
+    dpas               256
+    mul                210
+    slm_gather         128
+    add_sub            126
+    sync               64
+    usm_store          63
+    usm_block_load     46
+    slm_block_load     32
+    branch             11
+    cmp_sel            10
+    send_other         7
+    slm_store          5
+    mad_fp             4
+    other:nop          2
+    math               1
+    widths: 1-wide x727, 16-wide x906, 2-wide x7, 8-wide x373, ?-wide x75
+== ZTSZ7k_smallILi8ELi1ELi3ELi1EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 843
+  RA: type	LOCAL_ROUND_ROBIN_RA
+  largest basic block B009 (unrolled loop body): 743 instructions
+    shift              263
+    and_or_xor         231
+    slm_gather         128
+    mov                96
+    add_sub            9
+    usm_block_load     8
+    sync               5
+    mul                2
+    branch             1
+    widths: 1-wide x35, 16-wide x701, 2-wide x1, ?-wide x6
+  whole kernel: 811 instructions
+    shift              271
+    and_or_xor         237
+    slm_gather         128
+    mov                115
+    add_sub            16
+    usm_block_load     11
+    branch             7
+    sync               7
+    cmp_sel            6
+    mul                5
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x84, 16-wide x705, 2-wide x5, 8-wide x1, ?-wide x16
+== ZTSZ7k_smallILi6ELi1ELi5ELi3EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 902
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B009 (unrolled loop body): 732 instructions
+    mov                195
+    shift              166
+    slm_gather         128
+    and_or_xor         123
+    sync               82
+    usm_block_load     14
+    add_sub            12
+    dpas               8
+    mul                3
+    branch             1
+    widths: 1-wide x37, 16-wide x611, 2-wide x1, ?-wide x83
+  whole kernel: 815 instructions
+    mov                219
+    shift              176
+    and_or_xor         130
+    slm_gather         128
+    sync               84
+    add_sub            21
+    usm_block_load     18
+    mul                8
+    dpas               8
+    branch             7
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    slm_store          2
+    mad_fp             1
+    usm_gather         1
+    usm_store          1
+    widths: 1-wide x91, 16-wide x623, 2-wide x5, 32-wide x2, 8-wide x1, ?-wide x93
+== ZTSZ7k_smallILi6ELi16ELi5ELi2EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1043
+  RA: type	LOCAL_FIRST_FIT_BC_RA
+  largest basic block B010 (unrolled loop body): 625 instructions
+    shift              230
+    and_or_xor         155
+    slm_gather         128
+    sync               31
+    mov                27
+    usm_block_load     22
+    dpas               16
+    add_sub            12
+    mul                3
+    branch             1
+    widths: 1-wide x45, 16-wide x547, 2-wide x1, ?-wide x32
+  whole kernel: 1004 instructions
+    shift              261
+    mov                173
+    and_or_xor         161
+    slm_gather         128
+    add_sub            81
+    mul                71
+    sync               34
+    usm_block_load     26
+    dpas               16
+    usm_gather         16
+    usm_store          16
+    branch             8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x267, 16-wide x677, 2-wide x5, 32-wide x8, 8-wide x3, ?-wide x44
+== ZTSZ5k_bigILi8ELi2ELi5EEN4sycl3_V15eventERNS1_5queueE4BufsiiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1839
+  RA: type	LOCAL_FIRST_FIT_BC_RA
+  largest basic block B010 (unrolled loop body): 1086 instructions
+    shift              423
+    and_or_xor         247
+    slm_gather         128
+    dpas               128
+    mov                98
+    sync               26
+    slm_block_load     16
+    add_sub            9
+    usm_block_load     8
+    mul                2
+    branch             1
+    widths: 1-wide x68, 16-wide x668, 2-wide x1, 8-wide x322, ?-wide x27
+  whole kernel: 1838 instructions
+    shift              471
+    mov                318
+    and_or_xor         270
+    mul                206
+    slm_gather         128
+    dpas               128
+    add_sub            122
+    sync               49
+    usm_gather         31
+    usm_store          31
+    usm_block_load     30
+    slm_block_load     16
+    branch             11
+    cmp_sel            10
+    send_other         7
+    mad_fp             4
+    slm_store          3
+    other:nop          2
+    math               1
+    widths: 1-wide x584, 16-wide x863, 2-wide x6, 8-wide x325, ?-wide x60
+== ZTSZ7k_smallILi6ELi1ELi0ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 139
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B008 (unrolled loop body): 66 instructions
+    add_sub            23
+    shift              13
+    usm_block_load     12
+    mul                6
+    sync               6
+    and_or_xor         3
+    cmp_sel            2
+    branch             1
+    widths: 1-wide x59, ?-wide x7
+  whole kernel: 126 instructions
+    add_sub            29
+    shift              20
+    mov                16
+    usm_block_load     15
+    and_or_xor         10
+    mul                9
+    sync               8
+    cmp_sel            6
+    branch             5
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x100, 16-wide x4, 2-wide x4, 32-wide x2, 8-wide x1, ?-wide x15
+== ZTSZ7k_smallILi6ELi1ELi3ELi1EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 899
+  RA: type	LOCAL_ROUND_ROBIN_RA
+  largest basic block B009 (unrolled loop body): 799 instructions
+    shift              268
+    and_or_xor         233
+    mov                144
+    slm_gather         128
+    add_sub            11
+    usm_block_load     6
+    sync               5
+    mul                3
+    branch             1
+    widths: 1-wide x27, 16-wide x765, 2-wide x1, ?-wide x6
+  whole kernel: 867 instructions
+    shift              276
+    and_or_xor         239
+    mov                163
+    slm_gather         128
+    add_sub            18
+    usm_block_load     9
+    branch             7
+    sync               7
+    cmp_sel            6
+    mul                6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x76, 16-wide x769, 2-wide x5, 8-wide x1, ?-wide x16
+== ZTSZ7k_smallILi8ELi8ELi5ELi2EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 840
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B010 (unrolled loop body): 594 instructions
+    shift              233
+    and_or_xor         169
+    slm_gather         128
+    sync               24
+    usm_block_load     16
+    add_sub            10
+    dpas               8
+    mov                3
+    mul                2
+    branch             1
+    widths: 1-wide x45, 16-wide x523, 2-wide x1, ?-wide x25
+  whole kernel: 809 instructions
+    shift              254
+    and_or_xor         175
+    slm_gather         128
+    mov                80
+    add_sub            47
+    mul                33
+    sync               27
+    usm_block_load     20
+    branch             8
+    dpas               8
+    usm_gather         8
+    usm_store          8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x171, 16-wide x589, 2-wide x5, 32-wide x4, 4-wide x2, 8-wide x1, ?-wide x37
+== ZTSZ5k_bigILi6ELi4ELi5EEN4sycl3_V15eventERNS1_5queueE4BufsiiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 2719
+  RA: type	HYBRID_BC_RA
+  largest basic block B010 (unrolled loop body): 1350 instructions
+    shift              428
+    and_or_xor         273
+    dpas               256
+    mov                162
+    slm_gather         128
+    sync               50
+    slm_block_load     32
+    add_sub            11
+    usm_block_load     6
+    mul                3
+    branch             1
+    widths: 1-wide x92, 16-wide x836, 2-wide x1, 8-wide x370, ?-wide x51
+  whole kernel: 2718 instructions
+    mov                559
+    shift              508
+    mul                400
+    and_or_xor         312
+    dpas               256
+    add_sub            220
+    slm_gather         128
+    sync               91
+    usm_gather         63
+    usm_store          63
+    usm_block_load     46
+    slm_block_load     32
+    branch             11
+    cmp_sel            10
+    send_other         7
+    slm_store          5
+    mad_fp             4
+    other:nop          2
+    math               1
+    widths: 1-wide x1011, 16-wide x1225, 2-wide x7, 8-wide x373, ?-wide x102
+== ZTSZ7k_smallILi8ELi1ELi3ELi2EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 684
+  RA: type	LOCAL_ROUND_ROBIN_RA
+  largest basic block B009 (unrolled loop body): 553 instructions
+    shift              232
+    and_or_xor         169
+    slm_gather         128
+    add_sub            9
+    usm_block_load     8
+    mov                3
+    mul                2
+    sync               1
+    branch             1
+    widths: 1-wide x35, 16-wide x515, 2-wide x1, ?-wide x2
+  whole kernel: 621 instructions
+    shift              240
+    and_or_xor         175
+    slm_gather         128
+    mov                22
+    add_sub            16
+    usm_block_load     11
+    branch             7
+    cmp_sel            6
+    mul                5
+    sync               3
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x84, 16-wide x519, 2-wide x5, 8-wide x1, ?-wide x12
+== ZTSZ7k_smallILi8ELi1ELi2ELi1EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 788
+  RA: type	GRAPH_COLORING_SPILL_FF_RA
+  //.spill size 640
+  //.spill GRF est. ref count 26
+  largest basic block B009 (unrolled loop body): 718 instructions
+    shift              200
+    and_or_xor         167
+    slm_gather         128
+    mov                91
+    add_sub            73
+    sync               35
+    scratch_spill      10
+    usm_block_load     8
+    scratch_fill       3
+    mul                2
+    branch             1
+    widths: 1-wide x49, 16-wide x632, 2-wide x1, ?-wide x36
+  whole kernel: 788 instructions
+    shift              208
+    and_or_xor         174
+    slm_gather         128
+    mov                111
+    add_sub            80
+    sync               37
+    usm_block_load     11
+    scratch_spill      10
+    branch             7
+    cmp_sel            6
+    mul                5
+    send_other         3
+    scratch_fill       3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x100, 16-wide x636, 2-wide x5, 8-wide x1, ?-wide x46
+== ZTSZ7k_smallILi8ELi16ELi5ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1331
+  RA: type	LOCAL_FIRST_FIT_BC_RA
+  largest basic block B010 (unrolled loop body): 952 instructions
+    shift              423
+    and_or_xor         231
+    slm_gather         128
+    mov                98
+    usm_block_load     24
+    sync               19
+    dpas               16
+    add_sub            10
+    mul                2
+    branch             1
+    widths: 1-wide x53, 16-wide x556, 2-wide x1, 8-wide x322, ?-wide x20
+  whole kernel: 1331 instructions
+    shift              454
+    mov                244
+    and_or_xor         237
+    slm_gather         128
+    add_sub            79
+    mul                70
+    usm_block_load     28
+    sync               22
+    dpas               16
+    usm_gather         16
+    usm_store          16
+    branch             8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x275, 16-wide x686, 2-wide x5, 32-wide x8, 8-wide x325, ?-wide x32
+== ZTSZ7k_smallILi6ELi1ELi1ELi2EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 488
+  RA: type	GRAPH_COLORING_SPILL_FF_BC_RA
+  //.spill size 1472
+  //.spill GRF est. ref count 66
+  largest basic block B009 (unrolled loop body): 379 instructions
+    shift              166
+    and_or_xor         91
+    add_sub            76
+    scratch_spill      18
+    mov                11
+    scratch_fill       7
+    usm_block_load     6
+    mul                3
+    branch             1
+    widths: 1-wide x53, 16-wide x321, 2-wide x1, 8-wide x3, ?-wide x1
+  whole kernel: 449 instructions
+    shift              174
+    and_or_xor         98
+    add_sub            83
+    mov                31
+    scratch_spill      18
+    usm_block_load     9
+    branch             7
+    scratch_fill       7
+    cmp_sel            6
+    mul                6
+    send_other         3
+    other:nop          2
+    sync               2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x104, 16-wide x325, 2-wide x5, 8-wide x4, ?-wide x11
+== ZTSZ5k_bigILi8ELi8ELi5EEN4sycl3_V15eventERNS1_5queueE4BufsiiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 5166
+  RA: type	GRAPH_COLORING_SPILL_FF_RA
+  //.spill size 4160
+  //.spill GRF est. ref count 1627
+  largest basic block B010 (unrolled loop body): 2415 instructions
+    dpas               512
+    shift              424
+    sync               374
+    mov                270
+    and_or_xor         231
+    scratch_spill      220
+    scratch_fill       172
+    slm_gather         128
+    slm_block_load     64
+    add_sub            9
+    usm_block_load     8
+    mul                2
+    branch             1
+    widths: 1-wide x557, 16-wide x1095, 2-wide x1, 8-wide x387, ?-wide x375
+  whole kernel: 5165 instructions
+    mov                1081
+    mul                783
+    shift              568
+    dpas               512
+    sync               472
+    add_sub            410
+    and_or_xor         303
+    scratch_spill      232
+    scratch_fill       230
+    slm_gather         128
+    usm_gather         127
+    usm_store          127
+    usm_block_load     84
+    slm_block_load     64
+    branch             11
+    cmp_sel            10
+    slm_store          9
+    send_other         7
+    mad_fp             4
+    other:nop          2
+    math               1
+    widths: 1-wide x2412, 16-wide x1872, 2-wide x7, 8-wide x391, ?-wide x483
+== ZTSZ5k_bigILi8ELi4ELi6EEN4sycl3_V15eventERNS1_5queueE4BufsiiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 3131
+  RA: type	GRAPH_COLORING_SPILL_FF_RA
+  //.spill size 1280
+  //.spill GRF est. ref count 328
+  largest basic block B010 (unrolled loop body): 1459 instructions
+    shift              424
+    and_or_xor         263
+    dpas               256
+    slm_gather         128
+    mov                124
+    sync               118
+    scratch_spill      52
+    scratch_fill       42
+    slm_block_load     32
+    add_sub            9
+    usm_block_load     8
+    mul                2
+    branch             1
+    widths: 1-wide x195, 16-wide x804, 2-wide x1, 8-wide x340, ?-wide x119
+  whole kernel: 3130 instructions
+    shift              569
+    mov                547
+    mul                401
+    and_or_xor         303
+    add_sub            285
+    dpas               256
+    sync               186
+    slm_gather         128
+    usm_block_load     79
+    branch             74
+    usm_gather         64
+    usm_store          64
+    scratch_spill      57
+    scratch_fill       54
+    slm_block_load     32
+    cmp_sel            12
+    send_other         7
+    slm_store          5
+    mad_fp             4
+    other:nop          2
+    math               1
+    widths: 1-wide x1354, 16-wide x1164, 2-wide x7, 8-wide x345, ?-wide x260
+== ZTSZ7k_smallILi8ELi1ELi5ELi1EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 858
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B009 (unrolled loop body): 777 instructions
+    shift              264
+    and_or_xor         231
+    slm_gather         128
+    mov                96
+    sync               21
+    usm_block_load     16
+    add_sub            10
+    dpas               8
+    mul                2
+    branch             1
+    widths: 1-wide x45, 16-wide x709, 2-wide x1, ?-wide x22
+  whole kernel: 858 instructions
+    shift              273
+    and_or_xor         237
+    slm_gather         128
+    mov                120
+    sync               24
+    usm_block_load     20
+    add_sub            19
+    dpas               8
+    branch             7
+    mul                7
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_gather         1
+    usm_store          1
+    widths: 1-wide x98, 16-wide x721, 2-wide x5, 8-wide x1, ?-wide x33
+== ZTSZ7k_smallILi8ELi1ELi5ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1013
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B009 (unrolled loop body): 932 instructions
+    shift              423
+    and_or_xor         231
+    slm_gather         128
+    mov                98
+    usm_block_load     16
+    sync               15
+    add_sub            10
+    dpas               8
+    mul                2
+    branch             1
+    widths: 1-wide x45, 16-wide x548, 2-wide x1, 8-wide x322, ?-wide x16
+  whole kernel: 1013 instructions
+    shift              432
+    and_or_xor         237
+    slm_gather         128
+    mov                122
+    usm_block_load     20
+    add_sub            19
+    sync               18
+    dpas               8
+    branch             7
+    mul                7
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_gather         1
+    usm_store          1
+    widths: 1-wide x98, 16-wide x560, 2-wide x5, 8-wide x323, ?-wide x27
+== ZTSZ7k_smallILi6ELi8ELi5ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1233
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B010 (unrolled loop body): 1018 instructions
+    shift              428
+    and_or_xor         241
+    mov                162
+    slm_gather         128
+    sync               21
+    usm_block_load     14
+    add_sub            12
+    dpas               8
+    mul                3
+    branch             1
+    widths: 1-wide x37, 16-wide x588, 2-wide x1, 8-wide x370, ?-wide x22
+  whole kernel: 1233 instructions
+    shift              449
+    and_or_xor         247
+    mov                239
+    slm_gather         128
+    add_sub            49
+    mul                34
+    sync               24
+    usm_block_load     18
+    branch             8
+    dpas               8
+    usm_gather         8
+    usm_store          8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x163, 16-wide x654, 2-wide x5, 32-wide x4, 4-wide x2, 8-wide x371, ?-wide x34
+== ZTSZ7k_smallILi6ELi1ELi5ELi2EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 719
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B009 (unrolled loop body): 599 instructions
+    shift              230
+    and_or_xor         155
+    slm_gather         128
+    mov                27
+    sync               21
+    usm_block_load     14
+    add_sub            12
+    dpas               8
+    mul                3
+    branch             1
+    widths: 1-wide x37, 16-wide x539, 2-wide x1, ?-wide x22
+  whole kernel: 680 instructions
+    shift              239
+    and_or_xor         161
+    slm_gather         128
+    mov                51
+    sync               24
+    add_sub            21
+    usm_block_load     18
+    mul                8
+    dpas               8
+    branch             7
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_gather         1
+    usm_store          1
+    widths: 1-wide x90, 16-wide x551, 2-wide x5, 8-wide x1, ?-wide x33
+== ZTSZ7k_smallILi8ELi1ELi5ELi2EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 703
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B009 (unrolled loop body): 591 instructions
+    shift              233
+    and_or_xor         169
+    slm_gather         128
+    sync               21
+    usm_block_load     16
+    add_sub            10
+    dpas               8
+    mov                3
+    mul                2
+    branch             1
+    widths: 1-wide x45, 16-wide x523, 2-wide x1, ?-wide x22
+  whole kernel: 672 instructions
+    shift              242
+    and_or_xor         175
+    slm_gather         128
+    mov                27
+    sync               24
+    usm_block_load     20
+    add_sub            19
+    dpas               8
+    branch             7
+    mul                7
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_gather         1
+    usm_store          1
+    widths: 1-wide x98, 16-wide x535, 2-wide x5, 8-wide x1, ?-wide x33
+== ZTSZ7k_smallILi6ELi1ELi5ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1099
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B009 (unrolled loop body): 1018 instructions
+    shift              428
+    and_or_xor         241
+    mov                162
+    slm_gather         128
+    sync               21
+    usm_block_load     14
+    add_sub            12
+    dpas               8
+    mul                3
+    branch             1
+    widths: 1-wide x37, 16-wide x588, 2-wide x1, 8-wide x370, ?-wide x22
+  whole kernel: 1099 instructions
+    shift              437
+    and_or_xor         247
+    mov                186
+    slm_gather         128
+    sync               24
+    add_sub            21
+    usm_block_load     18
+    mul                8
+    dpas               8
+    branch             7
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_gather         1
+    usm_store          1
+    widths: 1-wide x90, 16-wide x600, 2-wide x5, 8-wide x371, ?-wide x33
+== ZTSZ7k_smallILi8ELi1ELi0ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 161
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B008 (unrolled loop body): 84 instructions
+    shift              19
+    add_sub            19
+    usm_block_load     16
+    and_or_xor         15
+    sync               8
+    mul                4
+    cmp_sel            2
+    branch             1
+    widths: 1-wide x75, ?-wide x9
+  whole kernel: 144 instructions
+    shift              26
+    add_sub            25
+    and_or_xor         22
+    usm_block_load     19
+    mov                16
+    sync               10
+    mul                7
+    cmp_sel            6
+    branch             5
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x116, 16-wide x4, 2-wide x4, 32-wide x2, 8-wide x1, ?-wide x17
+== ZTSZ7k_smallILi6ELi1ELi2ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1055
+  RA: type	GRAPH_COLORING_SPILL_FF_RA
+  //.spill size 960
+  //.spill GRF est. ref count 63
+  largest basic block B009 (unrolled loop body): 985 instructions
+    shift              364
+    mov                179
+    and_or_xor         177
+    slm_gather         128
+    add_sub            75
+    sync               30
+    scratch_spill      15
+    scratch_fill       7
+    usm_block_load     6
+    mul                3
+    branch             1
+    widths: 1-wide x50, 16-wide x513, 2-wide x1, 8-wide x390, ?-wide x31
+  whole kernel: 1055 instructions
+    shift              372
+    mov                199
+    and_or_xor         184
+    slm_gather         128
+    add_sub            82
+    sync               32
+    scratch_spill      15
+    usm_block_load     9
+    branch             7
+    scratch_fill       7
+    cmp_sel            6
+    mul                6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x101, 16-wide x517, 2-wide x5, 8-wide x391, ?-wide x41
+== ZTSZ7k_smallILi6ELi1ELi4ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1091
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B009 (unrolled loop body): 1018 instructions
+    shift              428
+    and_or_xor         241
+    mov                162
+    slm_gather         128
+    sync               21
+    usm_block_load     14
+    add_sub            12
+    dpas               8
+    mul                3
+    branch             1
+    widths: 1-wide x37, 16-wide x588, 2-wide x1, 8-wide x370, ?-wide x22
+  whole kernel: 1091 instructions
+    shift              436
+    and_or_xor         247
+    mov                184
+    slm_gather         128
+    sync               23
+    add_sub            20
+    usm_block_load     18
+    dpas               8
+    branch             7
+    cmp_sel            6
+    mul                6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x87, 16-wide x596, 2-wide x5, 8-wide x371, ?-wide x32
+== ZTSZ5k_bigILi6ELi2ELi5EEN4sycl3_V15eventERNS1_5queueE4BufsiiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1919
+  RA: type	LOCAL_FIRST_FIT_BC_RA
+  largest basic block B010 (unrolled loop body): 1166 instructions
+    shift              428
+    and_or_xor         257
+    mov                162
+    slm_gather         128
+    dpas               128
+    sync               26
+    slm_block_load     16
+    add_sub            11
+    usm_block_load     6
+    mul                3
+    branch             1
+    widths: 1-wide x60, 16-wide x708, 2-wide x1, 8-wide x370, ?-wide x27
+  whole kernel: 1918 instructions
+    shift              476
+    mov                382
+    and_or_xor         280
+    mul                207
+    slm_gather         128
+    dpas               128
+    add_sub            124
+    sync               49
+    usm_gather         31
+    usm_store          31
+    usm_block_load     28
+    slm_block_load     16
+    branch             11
+    cmp_sel            10
+    send_other         7
+    mad_fp             4
+    slm_store          3
+    other:nop          2
+    math               1
+    widths: 1-wide x576, 16-wide x903, 2-wide x6, 8-wide x373, ?-wide x60
+== ZTSZ7k_smallILi8ELi8ELi5ELi3EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1034
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B010 (unrolled loop body): 722 instructions
+    mov                195
+    shift              169
+    slm_gather         128
+    and_or_xor         105
+    sync               88
+    usm_block_load     16
+    add_sub            10
+    dpas               8
+    mul                2
+    branch             1
+    widths: 1-wide x45, 16-wide x587, 2-wide x1, ?-wide x89
+  whole kernel: 939 instructions
+    mov                272
+    shift              191
+    slm_gather         128
+    and_or_xor         112
+    sync               90
+    add_sub            47
+    mul                33
+    usm_block_load     20
+    branch             8
+    dpas               8
+    usm_gather         8
+    usm_store          8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    slm_store          2
+    mad_fp             1
+    widths: 1-wide x172, 16-wide x653, 2-wide x5, 32-wide x6, 4-wide x2, 8-wide x1, ?-wide x100
+== ZTSZ7k_smallILi6ELi1ELi6ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1105
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B010 (unrolled loop body): 1014 instructions
+    shift              428
+    and_or_xor         241
+    mov                162
+    slm_gather         128
+    sync               17
+    usm_block_load     14
+    add_sub            12
+    dpas               8
+    mul                3
+    branch             1
+    widths: 1-wide x37, 16-wide x588, 2-wide x1, 8-wide x370, ?-wide x18
+  whole kernel: 1105 instructions
+    shift              437
+    and_or_xor         247
+    mov                190
+    slm_gather         128
+    add_sub            22
+    sync               21
+    usm_block_load     18
+    mul                10
+    branch             8
+    dpas               8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    usm_gather         2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x93, 16-wide x605, 2-wide x5, 8-wide x371, ?-wide x31
+== ZTSZ7k_smallILi6ELi8ELi4ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1145
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B009 (unrolled loop body): 1021 instructions
+    shift              428
+    and_or_xor         241
+    mov                162
+    slm_gather         128
+    sync               24
+    usm_block_load     14
+    add_sub            12
+    dpas               8
+    mul                3
+    branch             1
+    widths: 1-wide x37, 16-wide x588, 2-wide x1, 8-wide x370, ?-wide x25
+  whole kernel: 1145 instructions
+    shift              439
+    and_or_xor         247
+    mov                200
+    slm_gather         128
+    add_sub            37
+    sync               26
+    usm_block_load     18
+    mul                14
+    dpas               8
+    usm_store          8
+    branch             7
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x131, 16-wide x591, 2-wide x5, 32-wide x12, 8-wide x371, ?-wide x35
+== ZTSZ7k_smallILi8ELi16ELi5ELi1EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1176
+  RA: type	LOCAL_FIRST_FIT_BC_RA
+  largest basic block B010 (unrolled loop body): 797 instructions
+    shift              264
+    and_or_xor         231
+    slm_gather         128
+    mov                96
+    sync               25
+    usm_block_load     24
+    dpas               16
+    add_sub            10
+    mul                2
+    branch             1
+    widths: 1-wide x53, 16-wide x717, 2-wide x1, ?-wide x26
+  whole kernel: 1176 instructions
+    shift              295
+    mov                242
+    and_or_xor         237
+    slm_gather         128
+    add_sub            79
+    mul                70
+    usm_block_load     28
+    sync               28
+    dpas               16
+    usm_gather         16
+    usm_store          16
+    branch             8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x275, 16-wide x847, 2-wide x5, 32-wide x8, 8-wide x3, ?-wide x38
+== ZTSZ7k_smallILi6ELi16ELi5ELi3EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1225
+  RA: type	LOCAL_FIRST_FIT_BC_RA
+  largest basic block B010 (unrolled loop body): 757 instructions
+    mov                195
+    shift              166
+    slm_gather         128
+    and_or_xor         123
+    sync               91
+    usm_block_load     22
+    dpas               16
+    add_sub            12
+    mul                3
+    branch             1
+    widths: 1-wide x45, 16-wide x619, 2-wide x1, ?-wide x92
+  whole kernel: 1138 instructions
+    mov                341
+    shift              198
+    and_or_xor         130
+    slm_gather         128
+    sync               93
+    add_sub            81
+    mul                71
+    usm_block_load     26
+    dpas               16
+    usm_gather         16
+    usm_store          16
+    branch             8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    slm_store          2
+    mad_fp             1
+    widths: 1-wide x268, 16-wide x749, 2-wide x5, 32-wide x10, 8-wide x3, ?-wide x103
+== ZTSZ7k_smallILi8ELi16ELi5ELi3EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1206
+  RA: type	LOCAL_FIRST_FIT_BC_RA
+  largest basic block B010 (unrolled loop body): 730 instructions
+    mov                195
+    shift              169
+    slm_gather         128
+    and_or_xor         105
+    sync               80
+    usm_block_load     24
+    dpas               16
+    add_sub            10
+    mul                2
+    branch             1
+    widths: 1-wide x53, 16-wide x595, 2-wide x1, ?-wide x81
+  whole kernel: 1111 instructions
+    mov                341
+    shift              201
+    slm_gather         128
+    and_or_xor         112
+    sync               82
+    add_sub            79
+    mul                70
+    usm_block_load     28
+    dpas               16
+    usm_gather         16
+    usm_store          16
+    branch             8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    slm_store          2
+    mad_fp             1
+    widths: 1-wide x276, 16-wide x725, 2-wide x5, 32-wide x10, 8-wide x3, ?-wide x92
+== ZTSZ7k_smallILi6ELi1ELi1ELi1EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 539
+  RA: type	GRAPH_COLORING_SPILL_FF_BC_RA
+  //.spill size 448
+  //.spill GRF est. ref count 18
+  largest basic block B009 (unrolled loop body): 469 instructions
+    shift              166
+    and_or_xor         153
+    add_sub            75
+    mov                57
+    usm_block_load     6
+    scratch_spill      6
+    mul                3
+    scratch_fill       2
+    branch             1
+    widths: 1-wide x36, 16-wide x431, 2-wide x1, ?-wide x1
+  whole kernel: 539 instructions
+    shift              174
+    and_or_xor         160
+    add_sub            82
+    mov                77
+    usm_block_load     9
+    branch             7
+    cmp_sel            6
+    mul                6
+    scratch_spill      6
+    send_other         3
+    other:nop          2
+    sync               2
+    scratch_fill       2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x87, 16-wide x435, 2-wide x5, 8-wide x1, ?-wide x11
+== ZTSZ7k_smallILi6ELi8ELi5ELi1EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1049
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B010 (unrolled loop body): 834 instructions
+    shift              269
+    and_or_xor         233
+    mov                144
+    slm_gather         128
+    sync               22
+    usm_block_load     14
+    add_sub            12
+    dpas               8
+    mul                3
+    branch             1
+    widths: 1-wide x37, 16-wide x773, 2-wide x1, ?-wide x23
+  whole kernel: 1049 instructions
+    shift              290
+    and_or_xor         239
+    mov                221
+    slm_gather         128
+    add_sub            49
+    mul                34
+    sync               25
+    usm_block_load     18
+    branch             8
+    dpas               8
+    usm_gather         8
+    usm_store          8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x163, 16-wide x839, 2-wide x5, 32-wide x4, 4-wide x2, 8-wide x1, ?-wide x35
+== ZTSZ7k_smallILi6ELi8ELi5ELi2EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 854
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B010 (unrolled loop body): 600 instructions
+    shift              230
+    and_or_xor         155
+    slm_gather         128
+    mov                27
+    sync               22
+    usm_block_load     14
+    add_sub            12
+    dpas               8
+    mul                3
+    branch             1
+    widths: 1-wide x37, 16-wide x539, 2-wide x1, ?-wide x23
+  whole kernel: 815 instructions
+    shift              251
+    and_or_xor         161
+    slm_gather         128
+    mov                104
+    add_sub            49
+    mul                34
+    sync               25
+    usm_block_load     18
+    branch             8
+    dpas               8
+    usm_gather         8
+    usm_store          8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x163, 16-wide x605, 2-wide x5, 32-wide x4, 4-wide x2, 8-wide x1, ?-wide x35
+== ZTSZ7k_smallILi8ELi16ELi5ELi2EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1022
+  RA: type	LOCAL_FIRST_FIT_BC_RA
+  largest basic block B010 (unrolled loop body): 612 instructions
+    shift              233
+    and_or_xor         169
+    slm_gather         128
+    sync               26
+    usm_block_load     24
+    dpas               16
+    add_sub            10
+    mov                3
+    mul                2
+    branch             1
+    widths: 1-wide x53, 16-wide x531, 2-wide x1, ?-wide x27
+  whole kernel: 991 instructions
+    shift              264
+    and_or_xor         175
+    mov                149
+    slm_gather         128
+    add_sub            79
+    mul                70
+    sync               29
+    usm_block_load     28
+    dpas               16
+    usm_gather         16
+    usm_store          16
+    branch             8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x275, 16-wide x661, 2-wide x5, 32-wide x8, 8-wide x3, ?-wide x39
+== ZTSZ7k_smallILi6ELi16ELi5ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1411
+  RA: type	LOCAL_FIRST_FIT_BC_RA
+  largest basic block B010 (unrolled loop body): 1032 instructions
+    shift              428
+    and_or_xor         241
+    mov                162
+    slm_gather         128
+    usm_block_load     22
+    sync               19
+    dpas               16
+    add_sub            12
+    mul                3
+    branch             1
+    widths: 1-wide x45, 16-wide x596, 2-wide x1, 8-wide x370, ?-wide x20
+  whole kernel: 1411 instructions
+    shift              459
+    mov                308
+    and_or_xor         247
+    slm_gather         128
+    add_sub            81
+    mul                71
+    usm_block_load     26
+    sync               22
+    dpas               16
+    usm_gather         16
+    usm_store          16
+    branch             8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x267, 16-wide x726, 2-wide x5, 32-wide x8, 8-wide x373, ?-wide x32
+== ZTSZ7k_smallILi8ELi1ELi5ELi3EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 897
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B009 (unrolled loop body): 719 instructions
+    mov                195
+    shift              169
+    slm_gather         128
+    and_or_xor         105
+    sync               85
+    usm_block_load     16
+    add_sub            10
+    dpas               8
+    mul                2
+    branch             1
+    widths: 1-wide x45, 16-wide x587, 2-wide x1, ?-wide x86
+  whole kernel: 802 instructions
+    mov                219
+    shift              179
+    slm_gather         128
+    and_or_xor         112
+    sync               87
+    usm_block_load     20
+    add_sub            19
+    dpas               8
+    branch             7
+    mul                7
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    slm_store          2
+    mad_fp             1
+    usm_gather         1
+    usm_store          1
+    widths: 1-wide x99, 16-wide x599, 2-wide x5, 32-wide x2, 8-wide x1, ?-wide x96
+== ZTSZ7k_smallILi8ELi1ELi2ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 958
+  RA: type	GRAPH_COLORING_SPILL_FF_RA
+  //.spill size 832
+  //.spill GRF est. ref count 44
+  largest basic block B009 (unrolled loop body): 888 instructions
+    shift              359
+    and_or_xor         167
+    slm_gather         128
+    mov                101
+    add_sub            73
+    sync               34
+    scratch_spill      12
+    usm_block_load     8
+    scratch_fill       3
+    mul                2
+    branch             1
+    widths: 1-wide x51, 16-wide x472, 2-wide x1, 8-wide x329, ?-wide x35
+  whole kernel: 958 instructions
+    shift              367
+    and_or_xor         174
+    slm_gather         128
+    mov                121
+    add_sub            80
+    sync               36
+    scratch_spill      12
+    usm_block_load     11
+    branch             7
+    cmp_sel            6
+    mul                5
+    send_other         3
+    scratch_fill       3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x102, 16-wide x476, 2-wide x5, 8-wide x330, ?-wide x45
+== ZTSZ5k_bigILi6ELi4ELi6EEN4sycl3_V15eventERNS1_5queueE4BufsiiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 3111
+  RA: type	GRAPH_COLORING_SPILL_FF_RA
+  //.spill size 960
+  //.spill GRF est. ref count 235
+  largest basic block B010 (unrolled loop body): 1459 instructions
+    shift              429
+    and_or_xor         273
+    dpas               256
+    mov                180
+    slm_gather         128
+    sync               77
+    scratch_fill       32
+    slm_block_load     32
+    scratch_spill      31
+    add_sub            11
+    usm_block_load     6
+    mul                3
+    branch             1
+    widths: 1-wide x156, 16-wide x843, 2-wide x1, 8-wide x381, ?-wide x78
+  whole kernel: 3110 instructions
+    mov                601
+    shift              574
+    mul                402
+    and_or_xor         313
+    add_sub            287
+    dpas               256
+    sync               134
+    slm_gather         128
+    usm_block_load     77
+    branch             74
+    usm_gather         64
+    usm_store          64
+    scratch_fill       39
+    scratch_spill      34
+    slm_block_load     32
+    cmp_sel            12
+    send_other         7
+    slm_store          5
+    mad_fp             4
+    other:nop          2
+    math               1
+    widths: 1-wide x1306, 16-wide x1203, 2-wide x7, 8-wide x386, ?-wide x208
+== ZTSZ5k_bigILi8ELi4ELi5EEN4sycl3_V15eventERNS1_5queueE4BufsiiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 2610
+  RA: type	GRAPH_COLORING_RR_BC_RA
+  largest basic block B010 (unrolled loop body): 1269 instructions
+    shift              423
+    and_or_xor         263
+    dpas               256
+    slm_gather         128
+    mov                98
+    sync               49
+    slm_block_load     32
+    add_sub            9
+    usm_block_load     8
+    mul                2
+    branch             1
+    widths: 1-wide x100, 16-wide x796, 2-wide x1, 8-wide x322, ?-wide x50
+  whole kernel: 2609 instructions
+    shift              503
+    mov                495
+    mul                399
+    and_or_xor         302
+    dpas               256
+    add_sub            218
+    slm_gather         128
+    usm_gather         63
+    usm_store          63
+    sync               62
+    usm_block_load     48
+    slm_block_load     32
+    branch             11
+    cmp_sel            10
+    send_other         7
+    slm_store          5
+    mad_fp             4
+    other:nop          2
+    math               1
+    widths: 1-wide x1019, 16-wide x1185, 2-wide x7, 8-wide x325, ?-wide x73
+== ZTSZ7k_smallILi6ELi1ELi3ELi2EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 701
+  RA: type	LOCAL_ROUND_ROBIN_RA
+  largest basic block B009 (unrolled loop body): 562 instructions
+    shift              229
+    and_or_xor         155
+    slm_gather         128
+    mov                27
+    add_sub            11
+    usm_block_load     6
+    mul                3
+    sync               2
+    branch             1
+    widths: 1-wide x27, 16-wide x531, 2-wide x1, ?-wide x3
+  whole kernel: 630 instructions
+    shift              237
+    and_or_xor         161
+    slm_gather         128
+    mov                46
+    add_sub            18
+    usm_block_load     9
+    branch             7
+    cmp_sel            6
+    mul                6
+    sync               4
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x76, 16-wide x535, 2-wide x5, 8-wide x1, ?-wide x13
+== ZTSZ7k_smallILi8ELi8ELi6ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1203
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B010 (unrolled loop body): 944 instructions
+    shift              423
+    and_or_xor         231
+    slm_gather         128
+    mov                98
+    sync               27
+    usm_block_load     16
+    add_sub            10
+    dpas               8
+    mul                2
+    branch             1
+    widths: 1-wide x45, 16-wide x548, 2-wide x1, 8-wide x322, ?-wide x28
+  whole kernel: 1203 instructions
+    shift              444
+    and_or_xor         237
+    mov                193
+    slm_gather         128
+    mul                49
+    add_sub            48
+    sync               31
+    usm_block_load     20
+    usm_gather         16
+    branch             8
+    dpas               8
+    usm_store          8
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x181, 16-wide x647, 2-wide x5, 32-wide x4, 4-wide x2, 8-wide x323, ?-wide x41
+== ZTSZ7k_smallILi8ELi1ELi1ELi2EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 465
+  RA: type	GRAPH_COLORING_SPILL_FF_RA
+  //.spill size 384
+  //.spill GRF est. ref count 14
+  largest basic block B009 (unrolled loop body): 364 instructions
+    shift              169
+    and_or_xor         105
+    add_sub            73
+    usm_block_load     8
+    scratch_spill      4
+    mul                2
+    scratch_fill       2
+    branch             1
+    widths: 1-wide x42, 16-wide x320, 2-wide x1, ?-wide x1
+  whole kernel: 434 instructions
+    shift              177
+    and_or_xor         112
+    add_sub            80
+    mov                20
+    usm_block_load     11
+    branch             7
+    cmp_sel            6
+    mul                5
+    scratch_spill      4
+    send_other         3
+    other:nop          2
+    sync               2
+    scratch_fill       2
+    mad_fp             1
+    slm_store          1
+    usm_store          1
+    widths: 1-wide x93, 16-wide x324, 2-wide x5, 8-wide x1, ?-wide x11
+== ZTSZ5k_bigILi8ELi4ELi4EEN4sycl3_V15eventERNS1_5queueE4BufsiiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 2013
+  RA: type	HYBRID_BC_RA
+  largest basic block B010 (unrolled loop body): 1272 instructions
+    shift              423
+    and_or_xor         263
+    dpas               256
+    slm_gather         128
+    mov                98
+    sync               52
+    slm_block_load     32
+    add_sub            9
+    usm_block_load     8
+    mul                2
+    branch             1
+    widths: 1-wide x100, 16-wide x796, 2-wide x1, 8-wide x322, ?-wide x53
+  whole kernel: 2012 instructions
+    shift              470
+    and_or_xor         302
+    mov                272
+    dpas               256
+    mul                209
+    slm_gather         128
+    add_sub            124
+    sync               68
+    usm_store          63
+    usm_block_load     48
+    slm_block_load     32
+    branch             11
+    cmp_sel            10
+    send_other         7
+    slm_store          5
+    mad_fp             4
+    other:nop          2
+    math               1
+    widths: 1-wide x735, 16-wide x866, 2-wide x7, 8-wide x325, ?-wide x79
+== ZTSZ7k_smallILi8ELi8ELi4ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1063
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B009 (unrolled loop body): 939 instructions
+    shift              423
+    and_or_xor         231
+    slm_gather         128
+    mov                98
+    sync               22
+    usm_block_load     16
+    add_sub            10
+    dpas               8
+    mul                2
+    branch             1
+    widths: 1-wide x45, 16-wide x548, 2-wide x1, 8-wide x322, ?-wide x23
+  whole kernel: 1063 instructions
+    shift              434
+    and_or_xor         237
+    mov                136
+    slm_gather         128
+    add_sub            35
+    sync               24
+    usm_block_load     20
+    mul                13
+    dpas               8
+    usm_store          8
+    branch             7
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x139, 16-wide x551, 2-wide x5, 32-wide x12, 8-wide x323, ?-wide x33
+== ZTSZ7k_smallILi6ELi16ELi4ELi0EEN4sycl3_V15eventERNS1_5queueE4BufsiiEUlNS1_7nd_itemILi1EEEE_.asm
+  platform: XE2
+  thread_config: numGRF=128, numAcc=4, numSWSB=16
+  instCount: 1232
+  RA: type	LOCAL_ROUND_ROBIN_BC_RA
+  largest basic block B009 (unrolled loop body): 1036 instructions
+    shift              428
+    and_or_xor         241
+    mov                162
+    slm_gather         128
+    sync               23
+    usm_block_load     22
+    dpas               16
+    add_sub            12
+    mul                3
+    branch             1
+    widths: 1-wide x45, 16-wide x596, 2-wide x1, 8-wide x370, ?-wide x24
+  whole kernel: 1232 instructions
+    shift              440
+    and_or_xor         247
+    mov                229
+    slm_gather         128
+    add_sub            57
+    mul                28
+    usm_block_load     26
+    sync               25
+    dpas               16
+    usm_store          16
+    branch             7
+    cmp_sel            6
+    send_other         3
+    other:nop          2
+    mad_fp             1
+    slm_store          1
+    widths: 1-wide x199, 16-wide x599, 2-wide x5, 32-wide x24, 8-wide x371, ?-wide x34

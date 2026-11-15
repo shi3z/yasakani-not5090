@@ -188,57 +188,69 @@ model runs, with one near-tie token different from the reference in the thinking
 
 B60 machine: the same computer as the 5060 Ti above (both cards installed; Intel Core i7-8700,
 Ubuntu 26.04), Intel oneAPI DPC++ 2026.2 on Level Zero, context 65,536 tokens (KV5 cache), greedy,
-speculative decoding on, measured November 15, 2026 with the attention layers that keep decoded
-copies of the keys and values in VRAM (4.3 GB at this context). The two runs of every prompt agree
-to within 0.2 tokens/s. The model is ready in 8 to 9 s. The 5060 Ti column is the CUDA engine with
-the speed model (the quality model with the draft model does not fit 16 GB).
+speculative decoding on, measured November 15, 2026. The engine keeps decoded copies of the keys
+and values in VRAM (4.3 GB at this context) and reads prompts in batches of up to 256 rows; the
+batch is chosen from the free VRAM at start (256 rows for the speed model, 128 for the quality
+model: 22.2 and 21.8 GB allocated of the 22.4 GB that are free on this card). The two runs of
+every prompt agree to within 0.2 tokens/s. The model is ready in 8 to 9 s. The 5060 Ti column is
+the CUDA engine with the speed model (the quality model with the draft model does not fit 16 GB).
 
 **Decode speed, thinking off — tokens/s (the four prompts of `yasakani bench`, 512 tokens; accepted tokens/pass in parentheses)**
 
 | Prompt | RTX 5060 Ti, speed model | Arc Pro B60, speed model | B60 / 5060 Ti | Arc Pro B60, quality model | B60 / 5060 Ti |
 |---|---:|---:|---:|---:|---:|
-| explain | 125.5 (4.20) | 56.5 (4.16) | 0.45 | 51.2 (4.00) | 0.41 |
-| code    | 202.6 (7.31) | 85.2 (6.56) | 0.42 | 87.5 (7.01) | 0.43 |
-| story   |  73.4 (2.44) | 36.3 (2.65) | 0.49 | 33.5 (2.55) | 0.46 |
-| proof   | 194.9 (7.11) | 82.9 (6.32) | 0.43 | 79.2 (6.24) | 0.41 |
-| **mean** | **149.1** | **65.2** | **0.44** | **62.9** | **0.42** |
+| explain | 125.5 (4.20) | 61.6 (4.16) | 0.49 | 56.0 (4.00) | 0.45 |
+| code    | 202.6 (7.31) | 94.6 (6.56) | 0.47 | 97.1 (7.01) | 0.48 |
+| story   |  73.4 (2.44) | 39.5 (2.65) | 0.54 | 36.5 (2.55) | 0.50 |
+| proof   | 194.9 (7.11) | 91.6 (6.32) | 0.47 | 87.3 (6.24) | 0.45 |
+| **mean** | **149.1** | **71.8** | **0.48** | **69.2** | **0.46** |
 
 **Decode speed, thinking on — tokens/s (accepted tokens/pass in parentheses)**
 
 | Prompt | RTX 5060 Ti, speed model | Arc Pro B60, speed model | B60 / 5060 Ti | Arc Pro B60, quality model | B60 / 5060 Ti |
 |---|---:|---:|---:|---:|---:|
-| explain | 123.7 (4.13) | 65.5 (5.12) | 0.53 | 57.4 (4.45) | 0.46 |
-| code    | 139.4 (4.70) | 60.1 (4.49) | 0.43 | 66.0 (5.28) | 0.47 |
-| story   |  75.1 (2.50) | 35.7 (2.63) | 0.48 | 36.0 (2.75) | 0.48 |
-| proof   | 156.4 (5.33) | 70.3 (5.33) | 0.45 | 67.8 (5.33) | 0.43 |
-| **mean** | **123.6** | **57.9** | **0.47** | **56.8** | **0.46** |
+| explain | 123.7 (4.13) | 72.6 (5.12) | 0.59 | 63.0 (4.45) | 0.51 |
+| code    | 139.4 (4.70) | 66.0 (4.49) | 0.47 | 72.7 (5.28) | 0.52 |
+| story   |  75.1 (2.50) | 39.0 (2.63) | 0.52 | 39.2 (2.75) | 0.52 |
+| proof   | 156.4 (5.33) | 77.8 (5.33) | 0.50 | 74.8 (5.33) | 0.48 |
+| **mean** | **123.6** | **63.8** | **0.52** | **62.4** | **0.50** |
 
 The tokens accepted per pass are about the same on both cards, so the gap is the time of one
 pass. The tokens per pass are not identical: the generated tokens were not compared one by one
 between the two engines for these prompts, and the B60 arithmetic is not bit-identical to CUDA in
 every case (near-ties can fall the other way). On the B60 the generated tokens are identical with
-look-ahead on and off.
+look-ahead on and off, and the engine state after a prompt does not depend on the batch size.
 
-**Long prompts — one document repeated to the given length, then a 256-token summary (speed in tokens/s)**
+**Long prompts — one document repeated to the given length, then a 256-token summary (speed in tokens/s; context 65,536; B60: prefill batch 256 with the speed model, 128 with the quality model)**
 
 | Prompt tokens | Card, model | Prompt read | Read speed | Generation | One pass | Tokens/pass |
 |---:|---|---:|---:|---:|---:|---:|
 | 8,000 | RTX 5060 Ti, speed | 10.1 s | 792 | 99.1 | 34.8 ms | 3.45 |
-| 8,000 | Arc Pro B60, speed | 39.9 s | 201 | 44.1 | 78.1 ms | 3.45 |
-| 8,000 | Arc Pro B60, quality | 41.4 s | 193 | 44.3 | 81.1 ms | 3.59 |
+| 8,000 | Arc Pro B60, speed | 14.5 s | 551 | 48.8 | 70.7 ms | 3.45 |
+| 8,000 | Arc Pro B60, quality | 16.6 s | 482 | 49.0 | 73.4 ms | 3.59 |
 | 30,000 | RTX 5060 Ti, speed | 41.6 s | 720 | 96.1 | 37.9 ms | 3.64 |
-| 30,000 | Arc Pro B60, speed | 167.3 s | 179 | 36.2 | 85.9 ms | 3.11 |
-| 30,000 | Arc Pro B60, quality | 166.3 s | 180 | 35.8 | 89.1 ms | 3.19 |
+| 30,000 | Arc Pro B60, speed | 61.4 s | 489 | 38.5 | 80.8 ms | 3.11 |
+| 30,000 | Arc Pro B60, quality | 69.2 s | 434 | 38.1 | 83.6 ms | 3.19 |
 | 60,000 | RTX 5060 Ti, speed | 93.4 s | 643 | 76.5 | 41.6 ms | 3.19 |
-| 60,000 | Arc Pro B60, speed | 372.2 s | 161 | 30.3 | 107.8 ms | 3.27 |
-| 60,000 | Arc Pro B60, quality | 383.4 s | 157 | 25.9 | 110.4 ms | 2.87 |
+| 60,000 | Arc Pro B60, speed | 141.7 s | 423 | 34.6 | 94.5 ms | 3.27 |
+| 60,000 | Arc Pro B60, quality | 157.4 s | 381 | 29.5 | 97.0 ms | 2.87 |
 
-The B60 runs at 0.42 to 0.47 of the 5060 Ti with short contexts and at 0.34 to 0.45 when it
-generates after a long prompt. One pass grows by about 0.6 ms per 1,000 tokens of context on the
-B60 (it was 5.8 ms before the attention layers were rewritten: 414 ms per pass and 9.9 tokens/s at
-60,000 tokens) against about 0.13 ms on the 5060 Ti. Reading a prompt is the weakest point, a
-quarter of the 5060 Ti: this implementation reads 16 rows per pass, the CUDA engine up to 512.
-The 24 GB of the B60 hold the quality model together with the draft model, which 16 GB do not.
+The prefill batch is chosen automatically from the VRAM that is free when the engine starts, so the
+prompt-read speed depends on the model, the context length and what else uses the card: with a batch
+of 128 the speed model reads 491 / 385 tokens/s at 8,000 / 60,000 tokens instead of 551 / 423 (and
+on this card it has only 0.17 GB to spare at 256, so a little less free memory selects 128). The
+decode figures do not depend on the batch. `YX_PF_BATCH` fixes the batch, `YX_MEM=1` prints the
+choice and the allocations.
+
+The B60 generates at 0.46 to 0.52 of the 5060 Ti with short contexts and at 0.39 to 0.49 after a
+long prompt, and reads prompts at 0.66 to 0.70 of its speed (speed model; 0.59 to 0.61 with the quality model; it was 0.25 with 16 rows
+per pass: 201 / 179 / 161 tokens/s). What changed since the first measurement: prompts are read in
+batches whose weights are decoded once per launch, the attention kernels share the key and value
+tiles of a work-group, and the DeltaNet state recurrence keeps its state in registers
+([intel-arc/PORT_NOTES.md](intel-arc/PORT_NOTES.md) has the measurements, including what did not
+work). The 24 GB of the B60 hold the quality model together with the draft model, which 16 GB do
+not. Micro-benchmarks of the B60 behind these numbers are in [bench/architecture/](bench/architecture/)
+(its CUDA counterparts were built but not run: the 5060 Ti was in use).
 Raw records: [intel-arc/bench/](intel-arc/bench/). Details: [intel-arc/README.md](intel-arc/README.md).
 
 ## Build and run on Linux

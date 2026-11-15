@@ -7,7 +7,7 @@ It must be faster than the OpenCL prototype. User rejected OpenCL as the final A
 - `../` upstream clone (c0e11b9) + 2-line Linux fix in `src/engine35.cpp` (`ftello/fseeko`).
   CUDA build: `build/libyskn.so` (nvcc 13.1 at /usr/local/cuda-13.1). Works on RTX 5060 Ti: selfcheck PASS,
   bench mean 144.9 tok/s (ctx 8192), ~35 ms per pass. Uses 14.5 GB VRAM.
-- Model: `models/speed` (symlink `models/speed`). Put big files on /data (366 GB free); `/` is small.
+- Model: `models/speed` (a link to the model folder).
 - `b60/` OpenCL probes + venv (`.venv/bin/yasakani` CLI, pyopencl). `probe4.py` = OpenCL XMX kernel.
 - `./` SYCL work. `gemm_esimd2.cpp` = current best kernel. `dump.py` writes test tensors to `work/`.
 - Compiler: `source /opt/intel/oneapi/setvars.sh; icpx -fsycl -O2 -std=c++20`. Do NOT wrap in `sg render` (drops LD_LIBRARY_PATH;
@@ -269,3 +269,150 @@ runs when sampling (cpl > 0), so greedy (bench, selfcheck) loses nothing; sampli
   Knobs: `YX_PSH` (log2 of the part size, 9), `YX_SV` (QS, VQ, VC digits, 224).
 - `tests/pass_prof <context> <max_ctx>`, speed model, 16 rows, ms per pass: 256: 73; 4,096: 77; 20,000: 84; 60,000: 126
   (attention 13 / 17 / 24 / 66). 1 row: 56 / 58 / 60 / 72. Self-check: speed model 3 of 3, quality model as before.
+
+## Prefill batches, state kernel, decode-once GEMM, work-group attention (November 15)
+
+Baseline before this work (speed model, context 65,536): prompt read 201 / 179 / 161 tokens/s at 8,000 / 30,000 / 60,000 tokens,
+bench mean 65.2 tokens/s, 256-row pass not possible (16 rows per pass, 4.6 ms per token).
+
+- **Prefill batch** (`pf_batch()`, `YX_PF_BATCH` = 16 / 64 / 128 / 256, default 256; `Engine::cap` sizes all scratch buffers; `MRMAX` = 16
+  stays the decode / verify limit). `feed()` commits `cap` rows per pass. Look-ahead needs the model's choice after every prompt row,
+  so the head also runs on the whole batch (`Head` buffers are sized by `cap`); without look-ahead only the last row goes through the
+  head (`row_to_front`). Drafter context: captured rows go to `pfcap` and are fed to the drafter in its own 16-row chunks.
+  512 rows do not fit: with mirrors and batch buffers the card runs out of memory (prompt read fell to 48 tokens/s).
+- **GEMM for batches** (`gemm.hpp`): rows are free only up to 16 per decode (the products hide behind the gather latency).
+  `gemm_big<BITS, TR>` (row-set threads, input rows in SLM, sums in `part`): 64 rows of gate+up 0.82 ms with 32 rows per thread
+  (16 per thread 1.22, 64 per thread 1.16 = register spills). Used for 64 rows.
+  `gemm_once<BITS, D, ND>` (from 128 rows): a work-group of 16 threads owns 16 output rows, every thread decodes ONE of the 16
+  column chunks of a 512-column group into SLM, then multiplies all 16 with its own 4 / 8 / 16 input rows, int64 sums in registers.
+  One decode per launch instead of one per 32 rows: 256 rows gate+up 2.72 -> 1.39 ms, qkv+z 1.32 -> 0.66, down 1.31 -> 0.71.
+  Dead ends: sums in memory / SLM per row set with a private stash of the decoded weights (3.7 x slower), 64 sums in registers per thread.
+- **DeltaNet state** (`fx::k_state`): the recurrence is serial in the rows. A (head, 16 columns) block is shared by 2 threads that
+  keep 64 state rows each in registers and exchange the 4 partial sums through SLM (2 barriers per row); same operations and order.
+  0.50 -> 0.10 ms per token; the 16-row decode pass went from 75.9 to 70.0 ms. (State in SLM, one thread: no gain.)
+- **Attention** (`score16`, `vacc16`, default `YX_SV=550`): a work-group shares the 16-key tile of K (V) through SLM, each thread owns
+  8 queries (queries in registers) resp. 8 queries x 8 dim chunks of sums. Same values as `score<QS>` / `vacc<VQ, VC>`.
+  60,000 tokens, 256 rows: scores + values 997 -> 425 ms; 16 rows: 54 -> 32 ms. Work-groups that use the same (KV head, part) are
+  neighbours in the dispatch order.
+- **Checks**: `yskn_state_hash` (DeltaNet states, conv histories, KV codes, mirrors) + `tests/pf_check.py` (prompt lengths 16 ... 3000
+  around the batch boundaries, several chunks in a row): batches 16 / 64 / 128 / 256 give the hashes and first tokens of the original
+  16-row kernels. `tests/gemm_big_test` (GEMM timing + checksum), `tests/pass_prof` with `YX_FINE=1` (per-stage times, `Engine::mark`).
+- 256-row pass at context 512: 656 -> 380 ms (GEMM 1.48 -> 0.80 ms per token). Per token at 256 rows: GEMM 0.80, attention encode 0.18,
+  MLP post 0.15, GDN post 0.12, state 0.10 ms.
+
+### Results and dead ends of November 15 (speed model, context 65,536, batch 256, `lib` built from this tree)
+
+Conditions: Arc Pro B60, oneAPI DPC++ 2026.2, Level Zero, greedy, look-ahead on, one job on the GPU at a time (`flock work/b60.lock`;
+two engine instances do not fit in 24 GB and thrash). Prompt read / generation from `bench/longctx_b60.py` (256 generated tokens),
+decode from `yasakani bench` (512 tokens, 1 run). The RTX 5060 Ti figures are the other card's saved results.
+
+| | before | now | RTX 5060 Ti |
+|---|---|---|---|
+| prompt read, 8,000 tokens | 201 tok/s | 550 tok/s | 792 |
+| prompt read, 30,000 tokens | 179 tok/s | 486 tok/s | 720 |
+| prompt read, 60,000 tokens | 161 tok/s | 419 tok/s | 643 |
+| generation after 8,000 / 30,000 / 60,000 | 44.1 / 36.2 / 30.3 | 49.1 / 38.9 / 35.0 tok/s | 99.1 / 96.1 / 76.5 |
+| decode, mean of the 4 bench prompts | 65.2 tok/s | 71.7 tok/s | 149.1 |
+
+Checks passed with this build: state hashes and first tokens of batches 16 and 256 equal to the original 16-row kernels;
+self-check speed model 3 of 3, quality model as before (the one near-tie in "thinking"); look-ahead on / off identical ids on 4 prompts.
+
+256-row pass, ms per token by context (`tests/pass_prof <context> 65536`, `YX_FINE=1`):
+
+| stage | 8K | 30K | 60K |
+|---|---|---|---|
+| GEMM (all) | 0.80 | 0.80 | 0.80 |
+| attention scores + values, per-thread K/V loads (`YX_SV=224`) | 0.27 | 1.09 | 3.90 |
+| ... work-group tiles in SLM (`score16` / `vacc16`), groups of a part far apart | | 0.78 | 1.66 |
+| ... the same, groups of a part adjacent in the dispatch order (default) | | 0.62 | 1.22 |
+| ... fused online softmax (`YX_ATTN_FA=1`) | | 1.36 (2.26 before the register fix) | 4.48 (before the fix) |
+| attention other / GDN without GEMM / MLP post + res_norm | 0.22 / 0.28 / 0.19 | 0.26 / 0.28 / 0.19 | 0.32 / 0.28 / 0.19 |
+
+Why the order of the work-groups matters: at 60,000 tokens the K mirror of a layer is 123 MB and a part (512 keys of one KV head)
+is 256 KB. The 12 work-groups that use the same part were 118 parts (about 30 MB) apart in the dispatch order, more than the
+second cache level holds (16-32 MiB measured in bench/architecture), so every logical read of a tile was a DRAM read. With the
+groups adjacent the tile is read from memory once. (Inferred from the timings; DRAM bytes and cache hit rates were not measured:
+no VTune / GPU counters were used.)
+
+Dead ends (kept in the source only where noted):
+- `gemm_big` with 64 rows per thread (64 int32 sums in registers): 1.16 ms against 0.82 ms with 32 rows per thread: spills.
+- Decode once with a per-thread stash of the decoded weights in SLM and the int64 sums in `part` (removed): 3.7 x slower than
+  `gemm_big`; sums in memory or SLM are slow, they have to stay in registers (`gemm_once`).
+- USM loads of the input rows in `gemm_big`: about as expensive as the products; the rows go to SLM.
+- DeltaNet state in SLM with one thread per block: no gain; registers + 2 threads: 4.7 x.
+- `score1` (`YX_SV=3xx`, queries in registers, per-thread K loads): 5 % at most; superseded by `score16`.
+- Batch 512: out of memory with the mirrors (prompt read 48 tokens/s). `pf_batch()` caps at 256.
+- Fused attention (`ak::fa48`, `YX_ATTN_FA=1`, experiment): scores, online softmax and weighted values in one kernel, 48 threads
+  per work-group (16 score threads + 32 value threads), no score / weight buffers in global memory. 3.6 x slower than the default
+  at 512 / 30,000 / 60,000 tokens in the first version: both roles' registers (64 + 64) were allocated in every thread. With one
+  shared block of 64 registers it is still 2.2 x slower at 30,000 tokens (348 against 159 ms per 256-row pass): three barriers per
+  round of 64 keys with two thirds of the threads idle in each phase, and scalar code per query for the running maximum.
+  Not bit-identical to the default path (maximum per group of 16 keys instead of per part); its numerical error was not evaluated
+  because it is not a candidate. The default stays `score16` / `vacc16`.
+
+### Device memory, automatic prefill batch, generated code (November 15)
+
+**Allocations by purpose** (`YX_MEM=1` prints them at open and after the draft model is loaded; context 65,536; GB):
+
+| model, batch | weights + engine scratch | head | attention (KV cache 1.4, mirrors 4.3, batch buffers) | draft model | allocated | free (driver) |
+|---|---|---|---|---|---|---|
+| speed, 128 | 9.08 | 0.95 | 7.65 | 2.29 | 19.97 | 2.34 |
+| quality, 64 | 10.63 | 0.77 | 6.97 | 2.29 | 20.66 | 1.65 |
+| quality, 128 | 10.83 | 0.95 | 7.81 | 2.29 | 21.88 | 0.41 |
+| quality, 256 | 11.23 | 1.30 | 9.50 | 2.29 | 24.32 | 0.00 |
+
+- The card reports 23.91 GB; allocated + free is 22.3 GB in every row, i.e. that is what an engine can use.
+- **Quality model with batch 256: 24.32 GB allocated, 0.00 GB free: over-committed.** The driver keeps running and moves buffers
+  to system memory; generation falls to 0.3-0.4 tokens/s (9 s per pass), prompt reading is still 461 / 386 / 372 tokens/s.
+  Batch 128: 482 / 378 tokens/s at 8,000 / 60,000 tokens and 49.3 / 29.9 tokens/s after them; batch 64: 335 / 280 and the same
+  generation. So 128 is the right batch for the quality model, and a larger batch is not faster once memory is tight.
+- A row of batch costs 19 MB at this context (64 -> 128: +1.22 GB, 128 -> 256: +2.44 GB).
+- **Automatic batch** (`plan_batch` in `api.cpp`; `YX_PF_BATCH` overrides it): engine + head + attention are constructed twice in a
+  counting mode (`yx::g_dry`: `to_dev` / `Engine::dev` only add up bytes) for batches 16 and 256; the need is linear in the batch.
+  need(batch) = counted bytes + 0.2 GB (the count comes out 0.13 GB low in all 9 measured configurations) + 0.9 x the size of the
+  draft-model files next to the model (2.29 GB allocated for 2.57 GB of files). The largest of 256 / 128 / 64 / 16 with
+  need + 0.15 GB (`YX_MEM_MARGIN_GB`) <= the device memory that is FREE at start is taken (`ZES_ENABLE_SYSMAN=1` is set by the
+  library so that the driver reports it; other processes' memory is already taken off; fallback 93 % of the total).
+  Estimate / allocated (GB): speed 16: 17.89 / 17.81, 64: 18.75 / 18.68, 128: 19.91 / 19.84, 256: 22.23 / 22.16; quality 16: 19.80 / 19.73,
+  64: 20.67 / 20.60, 128: 21.83 / 21.76; quality 256: 24.27 (does not fit 22.43 free). Chosen: speed 256, quality 128.
+  The speed model with 256 leaves 0.17 GB free: a little less free memory at start and it gets 128 (491 / 385 instead of
+  551 / 423 tokens/s at 8,000 / 60,000 tokens).
+- **Allocation failure**: `yskn_open` frees what the failed attempt allocated (`yx::g_dev_ptrs`, `dev_release`) and retries with the
+  next smaller batch. Test: `YX_FAIL_ALLOC_GB=19.5` -> "batch 256: out of device memory", then batch 128 with 17.55 GB allocated
+  (exactly the engine at 128: nothing left from the first attempt) and the reference state hashes. A failure while the draft model
+  is loaded is reported as an error (no retry there). `yskn_close` now frees the engine's device memory.
+- The partial-sum buffers of the old attention path (0.27 GB at batch 256) are no longer allocated with mirrors.
+- Not done: freeing the prefill buffers after a prompt, or separate buffer sets for prefill and decode. It would not make anything
+  faster (with batch 256 the quality model is already short of memory while reading), and the attention buffers are laid out by the
+  batch capacity, so decode would need its own set and every attention / head kernel a switch. Worth doing only to share the card.
+
+**Generated code** (IGC assembly, `NEO_CACHE_PERSISTENT=0 SYCL_CACHE_PERSISTENT=0 IGC_ShaderDumpEnable=1 IGC_DumpToCustomDir=<dir>/`,
+counted with bench/architecture `scripts/igc_asm_count.py`; all kernels numGRF = 128). Measured from the assembly:
+- `score16`, `vacc16`, `gemm_once`, `gemm_big` with 32 rows per thread: no register spills. XMX is used: 16 bf16 `dpas` per group of
+  16 keys in `score16`, 8 in `vacc16`, 32 int8 `dpas` per column group in `gemm_once<6, 8, 2>`.
+- `gemm_big` with 64 rows per thread: 3,456 bytes of spill, 208 spill stores and 181 fills in the loop body (512 `dpas`): the reason
+  why it is slower than 32 rows per thread.
+- `fa48` (fused attention experiment): after the shared register block only flag spills are left (12 stores, 25 loads); it is still
+  2.2 x slower than the default, so registers were one cause but not the only one.
+Not measured directly: occupancy, cache hit rates, DRAM bytes (inferred from timings only).
+
+**Barriers in `score16` / `vacc16`**: `A_RG` = 4 groups of 16 keys are staged per round (2 barriers per round instead of per group).
+60,000 tokens, 256 rows: values 136 -> 123 ms, scores 180 -> 178 ms. All SLM writes of a round happen before its first barrier and
+all reads between the two barriers; the state hashes are identical to the original kernels and between repeated runs.
+
+**Final figures of November 15** (context 65,536, automatic batch; `lib` of this tree; one job on the GPU):
+
+| | speed model (batch 256) | quality model (batch 128) | RTX 5060 Ti, speed model |
+|---|---|---|---|
+| prompt read 8,000 / 30,000 / 60,000 tokens | 551 / 489 / 423 tok/s | 482 / 434 / 381 tok/s | 792 / 720 / 643 |
+| generation after them | 48.8 / 38.5 / 34.6 tok/s | 49.0 / 38.1 / 29.5 tok/s | 99.1 / 96.1 / 76.5 |
+| bench mean, thinking off / on (512 tokens, 2 runs) | 71.8 / 63.8 tok/s | 69.2 / 62.4 tok/s | 149.1 / 123.6 |
+| self-check | 3 of 3 | 2 of 3 (the known near-tie) | 3 of 3 |
+
+State hashes: batch 16 = automatic batch for both models; speed model = the original 16-row kernels; repeated runs identical.
+Look-ahead on / off: identical ids on the 4 prompts, both models.
+
+- KV profile default (found when the repository build was checked without the Python package): it was a path relative to the
+  working directory (and the speed model's file); now `kvq_u5.bin` next to the model file, after `$YX_KV_PROFILE` and
+  `$YSKN_TB_PROFILE`. The profile files of the two models are byte-identical, so the earlier `pf_check` runs of the quality model
+  (which do not go through the package and used the speed model's file) remain valid.

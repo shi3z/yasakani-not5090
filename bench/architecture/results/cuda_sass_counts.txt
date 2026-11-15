@@ -1,0 +1,1243 @@
+CUDA code generation of the YASAKANI compressed GEMM kernels (static analysis, sm_120)
+======================================================================================
+
+Nothing in this file was measured on a GPU.  No CUDA or SYCL program was run.  The numbers are of two kinds and
+every table says which:
+  [SASS]   counted in the SASS listing (cuobjdump -sass) with scripts/sass_count.py
+  [SRC]    derived by reading the upstream source (paths relative to the upstream tree, e.g. src/lnord.cu:290)
+  [GIVEN]  B60 numbers quoted from the task description, not re-counted here
+
+How it was produced
+-------------------
+  scripts/cuda_codegen.sh <upstream tree> results/cuda_codegen        (NVCC=nvcc, CUOBJDUMP=cuobjdump from the environment)
+      nvcc release 13.1 (V13.1.115), -arch=sm_120 -O3 --fmad=false -std=c++17 -DYSKN_KVX_MODE=3 -I src -I include
+      units: gemm_compressed.cu lnord.cu pfa.cu q35_g6.cu  ->  .o, .ptx, .sass, .elf.txt
+  scripts/sass_count.py <unit>.sass --elf <unit>.elf.txt -f <regex of the mangled name> [--weight ...] [--range ...]
+  The complete output of cuda_codegen.sh is 76 MB, so results/cuda_codegen/ keeps only
+      <unit>.analysed.sass   SASS of the functions analysed here (sass_count.py --extract)
+      <unit>.analysed.ptx    PTX of the same entry points
+      <unit>.nvinfo.txt      the "function: ... register count / frame size / min stack size" lines of cuobjdump -elf
+      BUILD_INFO.txt
+  sass_count.py reads these reduced files exactly like the full ones; the commands are repeated in section 6.
+
+1. Which kernel runs in the default configuration                                                        [SRC]
+----------------------------------------------------------------------------------------------------------------
+Dispatch: Engine35::gemv, src/engine35.cpp:403-420 (and xe/spec/A_gemv.md sections 1.1, 4.1, 6).
+Body matrices have K = 6 (3 bits per weight); the LM head has K = 8 (A_gemv.md:174, 561).
+
+  M (input rows)  kernel                                              template instantiation
+  1, 3            LNORD XSUM, LO layout, cfg 1 (lnord.cu:416,421)      lnord_kernel<6, 8, true, 1, 1, false, 2, 11, true>
+  2, 4..8         LNORD XSUM, LO layout, cfg 2                         lnord_kernel<6, 8, true, 1, 1, false, 4, 8, true>
+  9..16           LNORD XSUM, plain layout (lnord.cu:425)              lnord_kernel<6, 16, true, 1, 1, false, 0, 0, false>
+  17..255         PFA XSUM (pfa.cu:356-362)                            pfa_kernel<6, 2, 1, false, 3, true>   (warps per CTA <= 4)
+                                                                       pfa_kernel<6, 2, 1, false, 1, true>   (5 or 6 warps per CTA)
+  >= 256          G6 (q35_g6.cu:310-351), weights pre-decoded          mt_predecode2_kernel<6> then
+                    gate/up, q/k/v/o ... (Kc = 5120, G = 10 <= 12)      mt_gemm6_kernel<4, false, false>
+                    down (Kc = 17408, G = 34 > 12)                      mt_gemm6_kernel<2, true, false>
+  head (K = 8)    same LNORD kernels with K = 8, <= 16 rows per launch lnord_kernel<8, 8|16, true, ...>
+
+  template parameters of lnord_kernel: <K, MT, XSM, LOOK, NR, FIN, UWX, MBX, LO> (lnord.cu:173); MT = row capacity (8 or 16),
+  UWX = warps per CTA (0 -> 2 for MT = 8, 4 for MT = 16, lnord.cu:29), MBX = min blocks per SM in __launch_bounds__.
+  The third template flag of mt_gemm6_kernel (PN) is true only if N % 128 != 0; N = 17408 and 5120 are multiples of 128.
+  The PFA variant (LB = 3 or 1) is chosen at run time from the SM count (pfa.cu:348-353), so both are listed.
+
+  gemm_kernel<K, XSM> of gemm_compressed.cu is NOT on this path: launch_gemm is called only from src/engine.cpp
+  (the older Engine class), never from engine35.cpp.  It is analysed below only because it was asked for.
+
+2. What one loop trip decodes (trip -> weights mapping)                                                  [SRC]
+----------------------------------------------------------------------------------------------------------------
+Common decode (lnord.cu:265-266, 286-295; pfa.cu:172-173, 205-209; q35_g6.cu:54-62):
+  * one trip handles one "half" = 256 columns of one 16-row tile.  Lane (gi = lane >> 2, tig = lane & 3) owns rows gi and
+    gi + 8 and the 64-column chunk tig.  Per trip it holds 2 * K words of code (K/2 uint4 loads, lnord.cu:271).
+  * per m-step (8 per trip, unrolled) a lane extracts 2 fields of 4K bits (lno_field), splits each into 2 pairs of steps and
+    calls pair_a 4 times; each pair_a does 2 table lookups (uint16 = 2 int8 weights) -> one 32-bit register = 4 weights.
+    So per m-step: 8 lookups and 16 weights per lane = 256 lookups and 512 weights per warp
+    (16 rows x 32 columns: exactly the 16x32 "A" operand of one m16n8k32 MMA).
+  * per trip: 8 m-steps -> 64 lookups per lane, 2048 lookups and 4096 weights (16 rows x 256 columns) per warp.
+    This is the same unit as one B60 trip (4096 weights, 2048 table lookups).
+
+  kernel                 loop in the source                   weights decoded per warp-trip   input rows (tokens) per trip   MMA per lane-trip
+  LNORD MT = 8           for bi (lnord.cu:267-319)            4096 (16 rows x 256 cols)        8                              8   (1 per m-step)
+  LNORD MT = 16          same, NB = 2                         4096                             16                             16
+  PFA NF = 4             for bi (pfa.cu:174-292), SS = 8,     4096                             64                             64  (2 per m-step per 16 tokens;
+                           NST = 1 (pfa.cu:89: NF > 4 ? 4 : 8)                                                                      here the weights are operand B, 2 x 8 rows)
+  gemm_kernel            for hi (gemm_compressed.cu:55-90)    4096 (2 x 8 rows x 256 cols)     32                             32
+  G6 predecode           straight line (q35_g6.cu:47-68)      4096 per warp, once              -                              0
+  G6 GEMM MB = 4         for u (q35_g6.cu:183-275): 8 stages  16384 CONSUMED per warp          64 per warp (128 per CTA)      256
+                           of 64 columns                        (32 rows x 512 cols, no decode)
+  G6 GEMM MB = 2         same                                 16384 consumed per warp          32 per warp (64 per CTA)       128
+
+  One MMA instruction (m16n8k32) is one warp-wide operation = 16 x 8 x 32 = 4096 int8 multiply-accumulates.
+  In every kernel above  (MMA per trip) x 4096 = (weights per trip) x (tokens per trip): no MMA capacity is wasted
+  when all token slots are used.  With fewer rows than the capacity (M = 1 in the MT = 8 kernel) the unused slots multiply zeros.
+
+  The XSUM accumulation (acc64 += A * sum) runs once per 512 columns = every second trip (blk == 1; lnord.cu:303-318,
+  pfa.cu:226-242); in G6 once per u (q35_g6.cu:210-225).  In the "weighted" columns below the basic block that holds it
+  has weight 0.5 where the compiler kept it as a separate, branch-guarded block.
+
+3. Normalisation
+----------------------------------------------------------------------------------------------------------------
+A SASS listing is the program of ONE thread; each listed instruction is executed by the 32 threads of a warp, i.e. it is a
+32-lane instruction ("warp-instruction").  The MMA is listed once and is one warp-wide tensor-core operation.
+A B60 ESIMD instruction operates on 16 lanes.  Two normalisations are given:
+  (a) instructions per 512 decoded weights:  CUDA = listed instructions per trip / 8;  B60 = ESIMD instructions per trip / 8
+      (both generators decode 4096 weights per trip; for the G6 GEMM, which decodes nothing, per 512 weights consumed = / 32)
+  (b) lane-operations per weight:            CUDA = listed instructions x 32 / 4096;   B60 = ESIMD instructions x 16 / 4096
+"weighted" = static count with the every-second-trip accumulate block at weight 0.5 (and, for G6, the pointer set-up
+block psetup, q35_g6.cu:111-120, at weight 1 / (8 G)); predicated instructions count as 1.  Loops nested inside the
+trip (the cp.async staging loops of PFA and gemm_kernel) are counted once although they run 2..4 times per trip.
+
+3.1 Per trip (4096 weights), weighted, per thread                                                        [SASS]
+
+                                   LNORD K6   LNORD K6   LNORD K6   LNORD K8   PFA K6     gemm_kernel  G6 predec.   B60
+                                   M=1,3      M=2,4..8   M=9..16    M=2,4..8   LB=3       <6,true>     K6 (once)    [GIVEN]
+  input rows covered per trip      8          8          16         8          64         32           -            ?
+  tensor-core (IMMA.16832.S8.S8)   8          8          16         8          64         32           0            8 dpas.8x8
+  table lookups (LDS.U16)          64         64         64         64         64         64           64           128 gathers
+  other shared-memory loads        0          0          0          0          36         48           32           -
+  shifts+logic (SHF, LOP3)         151        160.5      151        144        156.5      213          165          693 (226 shl+223 shr
+  IMAD by 2^n / IMAD.SHL           48         48.5       48         54.5       61         132          48                +138 and+106 or)
+  moves (MOV, MOV.64, UMOV, CS2R)  32         31         44         38         261        123.5        6            231
+  IMAD.WIDE (acc64 and addresses)  3          4          5          3          18         12           4            -
+  stack fills via R1 (LDL)         0          0          0          0.5        0          0            0            ?
+  ALL instructions                 357        372        396        362.5      827.5      792.5        444          ?
+  (static total, unweighted)       373        392        424        383        919        848          444
+
+  Composition of the K = 6, M = 1,3 loop (static): LOP3.LUT 75 + ULOP3 2, SHF.R.U32.HI 62 + USHF.R 2, SHF.L.W.U32.HI 10
+  (funnel shift), IMAD.SHL 13, IMAD x,0x10000,y 33 (the "(hi << 16) | lo" packing of two table entries is emitted as a
+  multiply-add), MOV 24 + MOV.64 2 + UMOV 2 + CS2R 10 (CS2R = clear a register pair), LDG.E.128 7 (codes and input rows),
+  FMUL 2, F2I 2, IMAD.WIDE 4, SHFL 1, 2 branches.
+
+3.2 Per 512 decoded weights = one MMA "A" operand (16 rows x 32 columns): instructions                    [SASS] / 8
+
+                                   LNORD K6   LNORD K6   LNORD K6   LNORD K8   PFA K6     gemm_kernel  G6 predec.   B60 [GIVEN] / 8
+                                   M=1,3      M=2,4..8   M=9..16    M=2,4..8   LB=3       <6,true>     K6           (16-lane instr.)
+  lanes per instruction            32         32         32         32         32         32           32           16
+  tensor-core instructions         1          1          2          1          8          4            0            1
+  table-lookup instructions        8          8          8          8          8          8            8            16
+  shift/logic instructions         18.9       20.1       18.9       18.0       19.6       26.6         20.6         86.6
+  IMAD-as-shift instructions       6.0        6.1        6.0        6.8        7.6        16.5         6.0          (in the 86.6)
+  move instructions                4.0        3.9        5.5        4.75       32.6       15.4         0.75         28.9
+  stack fills                      0          0          0          0.06       0          0            0            ?
+  all instructions                 44.6       46.5       49.5       45.3       103.4      99.1         55.5         ?
+
+3.3 Per weight: lane-operations (instructions x lanes / 4096)                                             [SASS] x 32 / 4096
+
+                                   LNORD K6   LNORD K6   LNORD K6   PFA K6     gemm_kernel  B60 [GIVEN] x 16 / 4096
+                                   M=1,3      M=2,4..8   M=9..16    LB=3       <6,true>
+  table lookups per weight         0.50       0.50       0.50       0.50       0.50         0.50   (128 x 16 = 2048)
+  shift+logic+IMAD-shift / weight  1.55       1.63       1.55       1.70       2.70         2.71   (693 x 16 = 11088)
+  moves per weight                 0.25       0.24       0.34       2.04       0.96         0.90   (231 x 16 = 3696)
+  all lane-operations per weight   2.79       2.91       3.09       6.46       6.19         ?
+  MMA per 512 weights x 8 rows     1          1          1          1          1            ? (dpas.8x8 MAC count not derived here)
+  all lane-operations per int8 MAC 0.349      0.363      0.193      0.101      0.193        ?
+      (= instructions x 32 / (4096 x rows per trip))
+
+  Reading: both generators do exactly one lookup per two weights.  Per weight the CUDA LNORD loop spends about 1.55 lane-ops
+  on shifts/masks/packing against 2.71 on the B60 (0.57x), and 0.25 lane-ops on moves against 0.90 (0.28x).  In instruction
+  counts the gap is larger (25 + 4 against 87 + 29 per 512 weights) because a SASS instruction covers 32 lanes, an ESIMD one 16.
+  LOP3 merges "and" with "or" ((a & imm) | b in one instruction) and IMAD merges "shl 16" with "or".
+
+3.4 G6 GEMM (weights already int8): per u = 512 columns x 32 weight rows per warp                         [SASS]
+
+                                   mt_gemm6<4,false,false> (gate/up ...)   mt_gemm6<2,true,false> (down)
+  range counted (see section 6)    [0x3d10, 0x9e20]                        [0x35e0, 0x8390]
+  input rows per warp / per CTA    64 / 128                                32 / 64
+  IMMA per thread per u            256                                     128
+  LDSM.16.M88.4 (ldmatrix, input)  64                                      32
+  LDS.128 (weights, 16 bytes)      32                                      32
+  LDGSTS.E.BYPASS.128 (cp.async)   32                                      24
+  DEPBAR.LE / BAR.SYNC / LDGDEPBAR 8 / 8 / 8                               8 / 8 / 8
+  IMAD.WIDE (acc64 += A * d)       64                                      32
+  static / weighted instructions   1554 / 719.6                            1244 / 495.8
+  weighted instr. per 512 weights  22.5 (8 IMMA)                           15.5 (4 IMMA)
+  lane-ops per int8 MAC            0.022                                   0.030
+  (weighted: psetup blocks, 8 x ~80 instructions with two integer divisions each, at weight 1/80 resp. 1/272)
+
+4. Details extracted from SASS / PTX
+----------------------------------------------------------------------------------------------------------------
+4.1 The 64-bit product  acc64 += A * (long long)sum                                                      [SASS + PTX]
+  source   lnord.cu:309-311:  A0 = (long long)__float2int_rn(__fmul_rn(a0, rm));  acc64 += A0 * (long long)d;
+  PTX      mul.rn.f32 %r1297, %r1461, %r1413 ;  cvt.rni.s32.f32 %r1298, %r1297 ;
+           mul.wide.s32 %rd236, %r1298, %r1431 ;  add.s64 %rd288, %rd236, %rd288
+           (the front end already narrowed the s64 x s64 product to a widening 32 x 32 multiply)
+  SASS     FMUL R30, R30, R53 ;  F2I.NTZ R37, R30 ;  IMAD.WIDE R70, R44, R37, R70
+           i.e. ONE instruction: signed 32 x 32 -> 64 multiply plus 64-bit accumulate into the register pair R70:R71.
+           No IADD.64, no carry chain, no 64 x 64 multiply.  F2I.NTZ is what cvt.rni (round to nearest even) becomes.
+  PFA and G6 write it by hand as inline PTX "mad.wide.s32" (pfa.cu:79, q35_g6.cu:34) -> the same IMAD.WIDE.
+  gemm_kernel<K,true>: same PTX (mul.wide.s32 + add.s64) and same SASS (16 FMUL + 16 F2I.NTZ + 16 IMAD.WIDE per trip).
+  The accumulator zeroing after the product is CS2R Rn, SRZ (clears two registers).
+
+4.2 Float multiply + add stay unfused                                                                    [SASS + PTX]
+  PTX of all four units: 0 occurrences of "fma".  Non-XSUM kernels (lno_madd / madd_rn = __fadd_rn(acc, __fmul_rn(a, b))):
+  PTX cvt.rn.f32.s32 ; mul.rn.f32 ; add.rn.f32  ->  SASS I2FP.F32.S32 ; FMUL ; FADD (gemm_kernel<6,false>: 16 + 16 + 16 per
+  trip, lnord_kernel<6,8,false,...>: 4 + 4 + 4, no FFMA in either loop).
+  FFMA does appear in the SASS, but only in code the compiler generates for div.rn.f32 (__fdiv_rn: MUFU.RCP followed by FFMA
+  correction steps, plus the subroutine $__internal_N_$__cuda_sm3x_div_rn_noftz_f32_slowpath) and for rsqrtf/ldexpf in
+  the prologues.  None of it is in an XSUM hot loop; the XSUM loops contain only FMUL and F2I.
+
+4.3 The table lookup                                                                                     [SASS + PTX]
+  source   unsigned(s_lut[W & 0xFFF]) | (unsigned(s_lut[(W >> K) & 0xFFF]) << 16)       (lnord.cu:266)
+  PTX      shr.u32 ; and.b32 x, 8190 ; add.s32 base ; ld.shared.b16 ; ... ; shl.b32 16 ; or.b32
+  SASS     SHF.R.U32.HI R48, RZ, 0xb, R34        (shift by one less than the field position: the index comes out x 2)
+           LOP3.LUT     R48, R48, 0x1ffe, RZ, 0xc0   (mask 12 bits, already scaled to a byte offset)
+           LDS.U16      R48, [R48+UR11]          (zero-extending 16-bit shared-memory load, base in a uniform register)
+           IMAD         R27, R48, 0x10000, R27   (pack two entries: hi * 65536 + lo)
+           where the state straddles the carry-in:  LOP3 (a & imm) | b ; LEA R65, R24, UR11, 0x1 ; LDS.U16 R24, [R65]
+  64 LDS.U16 per trip in every decoding kernel; no gather instruction, no address-size prefix work, no bounds code.
+
+4.4 The MMA                                                                                              [SASS]
+  PTX mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32  ->  SASS  IMMA.16832.S8.S8 R44, R24.ROW, R40.COL, R44
+  (destination and accumulator: 4 consecutive registers; .ROW operand: 4 consecutive registers; .COL operand: 2).
+  Because operands must be consecutive registers, a permuted fragment costs MOVs: PFA reorders a staged uint4
+  (a[1] = v.z, a[2] = v.y, pfa.cu:219), which is the source of its 261 MOV per trip (about 4 per IMMA).
+  LNORD builds the operand in place and needs none for it.
+
+4.5 Other mappings seen                                                                                  [SASS]
+  cp.async.cg.shared.global 16 bytes -> LDGSTS.E.BYPASS.128 ; cp.async.ca 8 bytes -> LDGSTS.E.64
+  cp.async.commit_group -> LDGDEPBAR ; cp.async.wait_group N / wait_all -> DEPBAR.LE SB0, N
+  __syncthreads -> BAR.SYNC.DEFER_BLOCKING ; ldmatrix.m8n8.x4.b16 -> LDSM.16.M88.4 ; ld.shared.v4.u32 -> LDS.128
+  __ldg(uint4) -> LDG.E.128.CONSTANT ; atomicAdd(unsigned long long) -> REDG.E.ADD.64.STRONG.GPU
+  __shfl_sync -> SHFL.IDX ; griddepcontrol.wait / launch_dependents -> ACQBULK / PREEXIT (as they appear in the listing)
+
+4.6 Spills and registers (cuobjdump -elf, .nv.info EIATTR_REGCOUNT / FRAME_SIZE / MIN_STACK_SIZE)       [SASS/ELF]
+
+  function                                             threads/CTA  registers  frame  stack ld/st in function  in hot loop
+  lnord_kernel<6,8,true,1,1,false,2,11,true>           64           80         0      0                        0
+  lnord_kernel<6,8,true,1,1,false,4,8,true>            128          64         0      0                        0
+  lnord_kernel<6,16,true,1,1,false,0,0,false>          128          128        0      0                        0
+  lnord_kernel<8,8,true,1,1,false,2,11,true>           64           80         0      0                        0
+  lnord_kernel<8,8,true,1,1,false,4,8,true>            128          64         8      4 (3 STL, 1 LDL)         1 LDL R55,[R1] in the
+                                                                                                                 accumulate block (0.5/trip)
+  lnord_kernel<8,16,true,1,1,false,0,0,false>          128          128        8      (outside the loop)       0
+  pfa_kernel<6,2,1,false,3,true>                       <= 128       222        0      0                        0
+  pfa_kernel<6,2,1,false,1,true>                       <= 192       167        0      0                        0
+  pfa_kernel<8,2,1,false,3,true>                       <= 128       224        0      0                        0
+  mt_gemm6_kernel<4,false,false>                       256          254        0      0                        0
+  mt_gemm6_kernel<2,true,false>                        256          184        0      0                        0
+  mt_predecode2_kernel<6>                              256          50         0      0                        0
+  gemm_kernel<6,true> / <8,true>                       128          127 / 128  0      0                        0
+
+  The register count follows __launch_bounds__(threads, min blocks): 65536 registers per SM / (threads x min blocks),
+  e.g. 128 threads x 8 blocks -> 64 (lnord.cu:174, 421).  Only the K = 8 (LM head) kernel at the 64-register limit spills,
+  and only a loop-invariant value that is reloaded once per 512 columns.  All K = 6 default kernels are spill-free.
+
+5. Algorithmic structure of the CUDA GEMM paths (for a port)                                             [SRC]
+----------------------------------------------------------------------------------------------------------------
+5.1 Data layout shared by all paths
+  * Code stream "lno" (built once at load by lnord_build, lnord.cu:58-88, engine35.cpp:162; pure permutation, same size as
+    the file stream, N*Kc*K/16 bytes, lnord.cu:79): index [tile16][g][blk][u][lane] of uint4, u = 0..K/2-1.  A lane's
+    K/2 uint4 = 2K words = chunk tig (64 columns) of rows gi and gi+8 of a 16-row tile, for one half blk (256 columns) of
+    one 512-column group g.  One warp-wide 16-byte load per u is fully coalesced (32 x 16 bytes contiguous, lnord.cu:191).
+  * Table: 4096 x uint16 (two int8 weights per 12-bit state), copied by every CTA into shared memory at kernel start
+    with 512 uint4 loads: __shared__ uint16_t s_lut[4096] = 8 KB, REP = 1 (lnord.cu:181, 209; pfa.cu:91, 151; q35_g6.cu:38-40).
+    Only the old gemm_kernel uses REP = 2 (every entry stored twice, 16 KB, index s*2 + (g & 1) to spread lanes over
+    bank pairs; v2_decode.cuh:27, 33-43; gemm_compressed.cu:6, 24, 71).
+  * State extraction: fields of 4K bits (2 pairs of steps) are cut from the 2K words with shift/or (lno_field,
+    lnord.cu:39-44); the 12 - K carry bits of the previous 64-column chunk come from the neighbouring lane with one
+    __shfl_sync per trip (lnord.cu:286-288), then chain inside the lane (q0 = p20 >> TS, lnord.cu:295).
+
+5.2 LNORD (M <= 16; the decode path)   src/lnord.cu:173-376
+  * One warp = one 16-row tile; a CTA = UW warps (2 for M = 1,3; 4 for M = 2,4..8 and for M = 9..16; lnord.cu:29, 421-425).
+  * Worker split over columns: grid = (ctas, max_workers) (lnord.cu:401); worker = blockIdx.y takes the column groups
+    g = worker + k * nw, k = 0..ng-1 (round robin, lnord.cu:190, 192, 268) and loops nblk = 2 * ng trips of 256 columns.
+    n_workers per tensor: table {down 9, gate 5, up 5, q/k/v/o/out 4, qkv/z 8} (engine35.cpp:122); for M >= 4 it is
+    replaced by nw_big = max(1, min(G, ceil(8 * SM_count / (N/64)))) (engine35.cpp:139-142, 407).
+    gate/up: G = 10, nw = 5 -> each warp runs 4 trips; down: G = 34, nw = 9 -> 6 or 8 trips.
+  * Each trip: 8 m-steps; per m-step 8 lookups per lane -> the 16x32 weight operand A[4]; one MMA per group of 8 rows
+    (NB = 1 for MT = 8, 2 for MT = 16) with the input fragment as operand B (lnord.cu:290-302).
+  * Input rows are NOT staged in shared memory: each lane loads one uint4 (16 bytes of qx) from global memory per two
+    m-steps per row group, directly (lnord.cu:298).  For M <= 8 the engine writes qx in the interleaved "LO" layout
+    (8 rows x 512 columns in 4096 bytes, 16-byte pieces of the 8 rows adjacent; lnord.cu:284, A_gemv.md section 3.4) so
+    that these loads of a warp are contiguous.
+  * Prefetch pipeline: the codes of trip bi+1 are loaded (__ldg) at the top of trip bi into nx[] (lnord.cu:271-274);
+    optional second look-ahead LOOK = 2 and extra touches (YSKN_LNO_LOOK / PREW) are off by default.  With programmatic
+    dependent launch (pdl.cuh:12-13) the table copy and the first code load are issued BEFORE griddepcontrol.wait, i.e.
+    while the previous kernel still runs (P.pre = 3, lnord.cu:210-214).
+  * Every second trip (blk == 1, end of a 512-column group): A = rint(alpha[tok][g] * rm[tok]) and
+    acc64[4] += A * d[4]; d = 0 (lnord.cu:303-318).  rm = 2^24 / max_g alpha is computed in the prologue with warp
+    shuffles (lnord.cu:236-264), us_out is written by CTA (0,0).
+  * Output: 4 atomicAdd(uint64) per lane per row group into part[tok][N] (lnord.cu:353-354), because the workers of one
+    row tile are different CTAs.  The sum is exact, so the order is irrelevant.
+  * Launches: ONE kernel launch per gemv call for up to 3 matrices that share the input (segments, e.g. gate+up, q+k+v;
+    lnord.cu:182-183, 398-408; engine35.cpp:404-408).  gate+up with M = 2,4..8: grid 544 x 5 CTAs of 128 threads;
+    M = 1,3: 1088 x 5 CTAs of 64 threads.
+
+5.3 PFA (17 <= M <= 255)   src/pfa.cu:85-321, launch 332-365
+  * grid = (ceil(M/64), row-tile CTAs, 1): blockIdx.x = tile of 64 tokens (NF = 4 fragments of 16), blockIdx.y = WPC warps,
+    each warp = one 16-row weight tile.  No worker split (FOLD = 1): a warp walks all G groups, nblk = 2G trips
+    (pfa.cu:105, 181), keeps its int64 accumulators in registers and writes float y = acc * us [* rr] itself at the end
+    (pfa.cu:301-310) - no atomics, output buffer is float [tok][N].
+  * WPC (warps per CTA) is chosen at launch: ceil(tasks / (2 * SM_count)) clamped to 1..6 (pfa.cu:348-353, 358).
+  * The weights are decoded exactly as in LNORD but become operand B (two uint2 = 2 x 8 rows, pfa.cu:207-208); operand A is
+    the input: 16 tokens x 32 columns.  Per m-step 2 x NF = 8 MMAs.
+  * Input rows ARE staged: per trip the CTA copies the 64 tokens x 256 columns block with cp.async (8-byte pieces,
+    pfa.cu:48-54, 120-132) into __shared__ uint4 s_x[2][8][4][32] (2 x 16 KB, double buffer); the copy for trip bi+1 is
+    issued at the start of trip bi, after cp.async.wait_all + __syncthreads (pfa.cu:198-199).  The codes are prefetched
+    one trip ahead into registers as in LNORD (pfa.cu:183-186).
+  * Prologue per CTA: rm, us, rr (the rsqrt norm factor when the input was "normed") into shared memory (pfa.cu:153-166).
+  * One launch per gemv call (up to 3 segments).
+
+5.4 G6 (M >= 256, prefill)   src/q35_g6.cu
+  * Weights are expanded to plain int8 first: mt_predecode2_kernel (q35_g6.cu:35-69), one warp per (16-row tile, 256-column
+    half), same decode as LNORD, 8 warps per CTA, output uint4 w8[tile][bi][m][lane] = N * Kc bytes (1 byte per weight,
+    4096 bytes per warp).  Cost: 2.67x the K = 6 stream, 2x the K = 8 stream.
+  * Memory: one workspace of max(N * Kc) over all body tensors (engine35.cpp:314-320; 17408 x 5120 = 89.1 MB) allocated at
+    engine creation when YSKN_Q35_G6 != 0, plus partial/flag buffers ((resident CTAs + 1) x 256 x 64 x 8 bytes,
+    q35_g6.cu:294-295).  Layer-wise prefill (>= 1024 tokens, engine35.cpp:984) additionally allocates
+    layer_weights_ = (sum of a layer's N*Kc minus the largest) and decodes all 6 or 7 matrices of the layer once
+    (layer_decode, engine35.cpp:1049-1061), caching the pointers (g6_.cached).
+  * When it is built: on EVERY G6 launch for a tensor that is not cached (q35_g6.cu:340-348) - the workspace is temporary
+    and is overwritten by the next matrix; with the layer cache, once per layer per prefill.  If the segments of a launch
+    do not fit together they are launched one by one (q35_g6.cu:329-338).
+  * GEMM kernel mt_gemm6_kernel<MB, BG, PN> (q35_g6.cu:83-277): 256 threads = 8 warps = 2 token groups x 4 weight-row groups;
+    CTA tile = BN 128 weight rows x BM = 32 * MB tokens (128 for MB = 4, 64 for MB = 2) x BK = 64 columns per stage.
+    A unit u = (tile, 512-column group) = 8 stages.  Ring of 4 shared-memory slots (G6_S), cp.async.cg 16-byte copies of
+    both the tokens (sA, swizzled columns, read back with ldmatrix) and the weights (sB, read with ld.shared.v4), three
+    stages ahead, cp.async.wait_group 2 + __syncthreads per stage (q35_g6.cu:121-129, 159-178, 194-207).
+    Shared memory (G6C::SMEM, q35_g6.cu:75): 4 x (BM x 64 + 8 KB) + tables = 79872 bytes (MB = 4) / 56320 bytes (MB = 2);
+    __launch_bounds__(256, 1).
+  * Persistent CTAs: grid = min(MT * NT, resident CTAs) (q35_g6.cu:301-302); CTA b processes the contiguous unit range
+    [U*b/grid, U*(b+1)/grid), U = MT * NT * G (q35_g6.cu:99-100).  A tile cut between two CTAs is completed through the
+    partial buffer skp with a claim/ready flag pair (atomicAdd / atomicExch, q35_g6.cu:227-253).
+  * G <= 12 (Kc = 5120, 6144): MB = 4, the int A = rint(alpha * rm) table for the whole tile is precomputed in shared memory
+    (fill, q35_g6.cu:130-148).  G > 12 (down, G = 34): MB = 2, A is computed from alpha at stage 7 (BG, q35_g6.cu:199-202).
+  * Launches per gemv call: one predecode launch per uncached matrix + one GEMM launch for all segments.
+  * Output float y[tok][N] = acc * us [* rr] written directly (q35_g6.cu:254-274).
+
+5.5 gemm_kernel (gemm_compressed.cu:14-100; older engine only)
+  * 128 threads = 4 warps, warp = 64-row tile processed in 4 passes of 16 rows (2 x 8-row units, G_NT = 2); blockIdx.y =
+    32-token tile (GM = 32), blockIdx.z = worker (column groups round robin); grid ((N+255)/256, ceil(M/32), n_workers)
+    (gemm_compressed.cu:103).
+  * Both the code tiles ("frag" layout, issue_stage_nocommit, v2_decode.cuh:130-136) and the 32 x 256 input block are
+    staged with cp.async.cg into a 2-stage ring, one half ahead (gemm_compressed.cu:34-38, 55-57); table REP = 2.
+  * Accumulation and atomicAdd as in LNORD (gemm_compressed.cu:86, 96).
+
+6. Raw output of sass_count.py (loop boundaries, basic blocks, class counts)                             [SASS]
+----------------------------------------------------------------------------------------------------------------
+Run from the arch directory; D = results/cuda_codegen.  "static" = instructions in the address range, "weighted" = with
+the --weight options shown.  Blocks shorter than 12 instructions are summarised (--brief 12).
+The G6 GEMM bodies are explicit ranges (--range) inside the one big loop over u: from the first cp.async wait of stage 0 to
+the last IMAD.WIDE of the accumulation; the prologue of the loop (fill) and the epilogue (partial merge, output) are outside.
+The G6 predecode range is the straight-line decode after the table copy.
+
+$ sass_count.py <unit>.analysed.sass --elf <unit>.nvinfo.txt --brief 12   with <unit> = lnord -f lnord_kernelILi6ELi8ELb1ELi1ELi1ELb0ELi2ELi11ELb1E --weight 0x5380=0.5
+==============================================================================================================
+function: _ZN4yskn12lnord_kernelILi6ELi8ELb1ELi1ELi1ELb0ELi2ELi11ELb1EEEvNS_10GemvLaunchE
+  instructions (static, whole function): 1560   code bytes: 0x6180
+  highest general register that appears: R77
+  stack loads/stores via R1 in the whole function: 0
+  .nv.info: register count 80, frame size 0x0, min stack size 0x0
+  loops (back edges), [start, back-branch], instructions, tensor-core instructions:
+    [0x0080, 0x00f0]      8 insns    0 mma  0 nested loop(s)
+    [0x09e0, 0x0a40]      7 insns    0 mma  0 nested loop(s)
+    [0x0af0, 0x0c60]     24 insns    0 mma  0 nested loop(s)
+    [0x1030, 0x1090]      7 insns    0 mma  0 nested loop(s)
+    [0x1140, 0x12b0]     24 insns    0 mma  0 nested loop(s)
+    [0x1490, 0x1740]     44 insns    0 mma  0 nested loop(s)
+    [0x1910, 0x19e0]     14 insns    0 mma  0 nested loop(s)
+    [0x1a50, 0x1ab0]      7 insns    0 mma  0 nested loop(s)
+    [0x1d20, 0x1fd0]     44 insns    0 mma  0 nested loop(s)
+    [0x21a0, 0x2270]     14 insns    0 mma  0 nested loop(s)
+    [0x2670, 0x2920]     44 insns    0 mma  0 nested loop(s)
+    [0x2af0, 0x2bc0]     14 insns    0 mma  0 nested loop(s)
+    [0x3050, 0x30b0]      7 insns    0 mma  0 nested loop(s)
+    [0x31b0, 0x33e0]     36 insns    0 mma  0 nested loop(s)
+    [0x3e70, 0x55b0]    373 insns    8 mma  0 nested loop(s)
+--------------------------------------------------------------------------------------------------------------
+  LOOP [0x3e70, 0x55b0]: 373 instructions per thread (static), 8 tensor-core instruction(s), nested loops: none
+    first: 0x3e70  ISETP.GE.AND P0, PT, R55, UR17, PT
+    last:  0x55b0  BRA.U UP1, 0x3e70
+    basic blocks (start..end, instructions, mma, weight, remark):
+      0x3e70..0x5370   337   8  w=1
+      0x5380..0x5570    32   0  w=0.50  can be skipped: forward branch at 0x5370 (BRA.U)
+      (+ 1 blocks shorter than 12 instructions with weight 1, 4 instructions in total, not listed)
+    class                                                            static  weighted   opcodes
+    tensor-core (IMMA/HMMA ...)                                           8         8   IMMA.16832.S8.S8:8
+    shared-memory load (LDS, LDSM)                                       64        64   LDS.U16:64
+    global/generic load (LDG, LD)                                         9         8   LDG.E.128.CONSTANT:7 LDG.E.CONSTANT:2
+    constant-bank load (LDC, LDCU)                                        3         2   LDC.64:3
+    shift / bit-field (SHF SHL SHR BMSK LOP LOP3 SGXT ...)              151       151   LOP3.LUT:75 SHF.R.U32.HI:62 SHF.L.W.U32.HI:10 ULOP3.LUT:2 USHF.R.U32.HI:2
+    IMAD by 2^n immediate, IMAD.SHL (= shift[+add])                      48        48   IMAD:33 IMAD.SHL.U32:13 UIMAD.WIDE.U32:1 IMAD.WIDE:1
+    integer multiply 32 bit (IMAD IMUL, non 2^n)                          2         2   UIMAD:2
+    integer multiply 32x32->64 (+64-bit add) (IMAD.WIDE)                  5         3   IMAD.WIDE:4 IMAD.WIDE.U32:1
+    64-bit add (IADD.64, carry forms .X)                                  5         3   IADD.64:3 LEA.HI.X:2
+    32-bit add / LEA (IADD IADD3 LEA)                                    17        16   LEA:12 ULEA:2 UIADD3:2 LEA.HI:1
+    move / clear (MOV UMOV CS2R R2UR)                                    38        32   MOV:24 CS2R:10 MOV.64:2 UMOV:2
+    compare / select / predicate (ISETP SEL PLOP3 ...)                   11        10   ISETP.GE.AND:3 SEL:2 UISETP.NE.AND:2 ISETP.NE.S64.AND:1 ISETP.NE.AND:1 UISETP.GE.AND:1 PLOP3.LUT:1
+    floating point (FMUL FADD FFMA F2I I2F MUFU ...)                      4         2   FMUL:2 F2I.NTZ:2
+    warp shuffle / vote (SHFL VOTE)                                       2         2   VOTEU.ALL:1 SHFL.IDX:1
+    branch / call / exit (BRA CALL RET EXIT BSSY BSYNC)                   2         2   BRA.U:2
+    padding (NOP, never-true predicate)                                   3         3   UIADD3:3
+    everything else                                                       1         1   S2UR:1
+    TOTAL                                                               373       357
+    predicated instructions in the loop (counted as 1 each): 35
+    stack loads/stores via R1 in the loop: 0
+    distinct general registers referenced in the loop: 67 (highest R77)
+
+$ sass_count.py <unit>.analysed.sass --elf <unit>.nvinfo.txt --brief 12   with <unit> = lnord -f lnord_kernelILi6ELi8ELb1ELi1ELi1ELb0ELi4ELi8ELb1E --weight 0x5300=0.5
+==============================================================================================================
+function: _ZN4yskn12lnord_kernelILi6ELi8ELb1ELi1ELi1ELb0ELi4ELi8ELb1EEEvNS_10GemvLaunchE
+  instructions (static, whole function): 1584   code bytes: 0x6300
+  highest general register that appears: R61
+  stack loads/stores via R1 in the whole function: 0
+  .nv.info: register count 64, frame size 0x0, min stack size 0x0
+  loops (back edges), [start, back-branch], instructions, tensor-core instructions:
+    [0x0080, 0x00f0]      8 insns    0 mma  0 nested loop(s)
+    [0x09f0, 0x0a50]      7 insns    0 mma  0 nested loop(s)
+    [0x0b00, 0x0c70]     24 insns    0 mma  0 nested loop(s)
+    [0x1040, 0x10a0]      7 insns    0 mma  0 nested loop(s)
+    [0x1150, 0x12c0]     24 insns    0 mma  0 nested loop(s)
+    [0x14a0, 0x1750]     44 insns    0 mma  0 nested loop(s)
+    [0x1920, 0x19f0]     14 insns    0 mma  0 nested loop(s)
+    [0x1a60, 0x1ac0]      7 insns    0 mma  0 nested loop(s)
+    [0x1d30, 0x1fe0]     44 insns    0 mma  0 nested loop(s)
+    [0x21b0, 0x2280]     14 insns    0 mma  0 nested loop(s)
+    [0x2680, 0x2930]     44 insns    0 mma  0 nested loop(s)
+    [0x2b00, 0x2bd0]     14 insns    0 mma  0 nested loop(s)
+    [0x3060, 0x30c0]      7 insns    0 mma  0 nested loop(s)
+    [0x31c0, 0x33f0]     36 insns    0 mma  0 nested loop(s)
+    [0x3e00, 0x5670]    392 insns    8 mma  0 nested loop(s)
+--------------------------------------------------------------------------------------------------------------
+  LOOP [0x3e00, 0x5670]: 392 instructions per thread (static), 8 tensor-core instruction(s), nested loops: none
+    first: 0x3e00  S2R R32, SR_TID.X
+    last:  0x5670  BRA.U UP0, 0x3e00
+    basic blocks (start..end, instructions, mma, weight, remark):
+      0x3e00..0x3f10    18   0  w=1
+      0x3fc0..0x52f0   308   8  w=1
+      0x5300..0x5570    40   0  w=0.50  can be skipped: forward branch at 0x52f0 (BRA.U)
+      0x5580..0x5670    16   0  w=1
+      (+ 1 blocks shorter than 12 instructions with weight 1, 10 instructions in total, not listed)
+    class                                                            static  weighted   opcodes
+    tensor-core (IMMA/HMMA ...)                                           8         8   IMMA.16832.S8.S8:8
+    shared-memory load (LDS, LDSM)                                       64        64   LDS.U16:64
+    global/generic load (LDG, LD)                                         9         8   LDG.E.128.CONSTANT:7 LDG.E.CONSTANT:2
+    constant-bank load (LDC, LDCU)                                        2         1   LDC.64:2
+    shift / bit-field (SHF SHL SHR BMSK LOP LOP3 SGXT ...)              162    160.50   LOP3.LUT:82 SHF.R.U32.HI:64 SHF.L.W.U32.HI:10 USHF.R.U32.HI:2 ULOP3.LUT:2 USHF.R.S32.HI:2
+    IMAD by 2^n immediate, IMAD.SHL (= shift[+add])                      49     48.50   IMAD:33 IMAD.SHL.U32:14 UIMAD.WIDE.U32:1 IMAD.WIDE:1
+    integer multiply 32 bit (IMAD IMUL, non 2^n)                          4         3   UIMAD:2 IMAD:2
+    integer multiply 32x32->64 (+64-bit add) (IMAD.WIDE)                  7         4   IMAD.WIDE:4 IMAD.WIDE.U32:3
+    64-bit add (IADD.64, carry forms .X)                                  3         2   LEA.HI.X:2 IADD.64:1
+    32-bit add / LEA (IADD IADD3 LEA)                                    22     19.50   LEA:11 IADD:5 ULEA:3 UIADD3:2 LEA.HI:1
+    move / clear (MOV UMOV CS2R R2UR)                                    35        31   MOV:20 CS2R:10 UMOV:3 MOV.64:2
+    compare / select / predicate (ISETP SEL PLOP3 ...)                   10         9   ISETP.GE.AND:3 SEL:2 UISETP.NE.AND:2 UISETP.GE.AND:1 PLOP3.LUT:1 ISETP.NE.S64.AND:1
+    floating point (FMUL FADD FFMA F2I I2F MUFU ...)                      4         2   FMUL:2 F2I.NTZ:2
+    warp shuffle / vote (SHFL VOTE)                                       3         2   VOTEU.ALL:2 SHFL.IDX:1
+    branch / call / exit (BRA CALL RET EXIT BSSY BSYNC)                   5         5   BRA.U:2 BSSY.RECONVERGENT:1 BRA:1 BSYNC.RECONVERGENT:1
+    padding (NOP, never-true predicate)                                   2         2   UIADD3:2
+    everything else                                                       3      2.50   S2R:2 S2UR:1
+    TOTAL                                                               392       372
+    predicated instructions in the loop (counted as 1 each): 31
+    stack loads/stores via R1 in the loop: 0
+    distinct general registers referenced in the loop: 56 (highest R61)
+
+$ sass_count.py <unit>.analysed.sass --elf <unit>.nvinfo.txt --brief 12   with <unit> = lnord -f lnord_kernelILi6ELi16ELb1ELi1ELi1ELb0ELi0ELi0ELb0E --weight 0x6ab0=0.5
+==============================================================================================================
+function: _ZN4yskn12lnord_kernelILi6ELi16ELb1ELi1ELi1ELb0ELi0ELi0ELb0EEEvNS_10GemvLaunchE
+  instructions (static, whole function): 2016   code bytes: 0x7e00
+  highest general register that appears: R125
+  stack loads/stores via R1 in the whole function: 0
+  .nv.info: register count 128, frame size 0x0, min stack size 0x0
+  loops (back edges), [start, back-branch], instructions, tensor-core instructions:
+    [0x0080, 0x0100]      9 insns    0 mma  0 nested loop(s)
+    [0x0980, 0x09e0]      7 insns    0 mma  0 nested loop(s)
+    [0x0a90, 0x0bf0]     23 insns    0 mma  0 nested loop(s)
+    [0x0fb0, 0x1010]      7 insns    0 mma  0 nested loop(s)
+    [0x10c0, 0x1220]     23 insns    0 mma  0 nested loop(s)
+    [0x1400, 0x16b0]     44 insns    0 mma  0 nested loop(s)
+    [0x1880, 0x1950]     14 insns    0 mma  0 nested loop(s)
+    [0x19c0, 0x1a20]      7 insns    0 mma  0 nested loop(s)
+    [0x1c90, 0x1f40]     44 insns    0 mma  0 nested loop(s)
+    [0x2110, 0x21e0]     14 insns    0 mma  0 nested loop(s)
+    [0x25e0, 0x2890]     44 insns    0 mma  0 nested loop(s)
+    [0x2a60, 0x2b30]     14 insns    0 mma  0 nested loop(s)
+    [0x2f60, 0x3210]     44 insns    0 mma  0 nested loop(s)
+    [0x33e0, 0x34b0]     14 insns    0 mma  0 nested loop(s)
+    [0x38b0, 0x3b60]     44 insns    0 mma  0 nested loop(s)
+    [0x3d30, 0x3e00]     14 insns    0 mma  0 nested loop(s)
+    [0x4290, 0x42f0]      7 insns    0 mma  0 nested loop(s)
+    [0x43e0, 0x4610]     36 insns    0 mma  0 nested loop(s)
+    [0x5490, 0x6f00]    424 insns   16 mma  0 nested loop(s)
+--------------------------------------------------------------------------------------------------------------
+  LOOP [0x5490, 0x6f00]: 424 instructions per thread (static), 16 tensor-core instruction(s), nested loops: none
+    first: 0x5490  S2R R4, SR_CTAID.Y
+    last:  0x6f00  @P0 BRA 0x5490
+    basic blocks (start..end, instructions, mma, weight, remark):
+      0x5490..0x6aa0   354  16  w=1
+      0x6ab0..0x6e20    56   0  w=0.50  can be skipped: forward branch at 0x6aa0 (@!P0 BRA)
+      0x6e30..0x6f00    14   0  w=1
+    class                                                            static  weighted   opcodes
+    tensor-core (IMMA/HMMA ...)                                          16        16   IMMA.16832.S8.S8:16
+    shared-memory load (LDS, LDSM)                                       64        64   LDS.U16:64
+    global/generic load (LDG, LD)                                        15        13   LDG.E.128.CONSTANT:11 LDG.E.CONSTANT:4
+    constant-bank load (LDC, LDCU)                                        6         4   LDC.64:6
+    shift / bit-field (SHF SHL SHR BMSK LOP LOP3 SGXT ...)              151       151   LOP3.LUT:77 SHF.R.U32.HI:64 SHF.L.W.U32.HI:10
+    IMAD by 2^n immediate, IMAD.SHL (= shift[+add])                      48        48   IMAD:34 IMAD.SHL.U32:13 IMAD.WIDE.U32:1
+    integer multiply 32 bit (IMAD IMUL, non 2^n)                          2         2   IMAD:2
+    integer multiply 32x32->64 (+64-bit add) (IMAD.WIDE)                  9         5   IMAD.WIDE:8 IMAD.WIDE.U32:1
+    64-bit add (IADD.64, carry forms .X)                                 12         8   IADD.64:8 LEA.HI.X:4
+    32-bit add / LEA (IADD IADD3 LEA)                                    19        17   LEA:14 IADD:3 LEA.HI:1 ULEA:1
+    move / clear (MOV UMOV CS2R R2UR)                                    52        44   MOV:29 CS2R:20 MOV.64:2 UMOV:1
+    compare / select / predicate (ISETP SEL PLOP3 ...)                   14        12   ISETP.GE.AND:7 ISETP.NE.AND:3 ISETP.NE.S64.AND:2 SEL:2
+    floating point (FMUL FADD FFMA F2I I2F MUFU ...)                      8         4   FMUL:4 F2I.NTZ:4
+    warp shuffle / vote (SHFL VOTE)                                       1         1   SHFL.IDX:1
+    branch / call / exit (BRA CALL RET EXIT BSSY BSYNC)                   2         2   BRA:2
+    padding (NOP, never-true predicate)                                   2         2   UIADD3:2
+    everything else                                                       3         3   S2R:2 S2UR:1
+    TOTAL                                                               424       396
+    predicated instructions in the loop (counted as 1 each): 56
+    stack loads/stores via R1 in the loop: 0
+    distinct general registers referenced in the loop: 102 (highest R123)
+
+$ sass_count.py <unit>.analysed.sass --elf <unit>.nvinfo.txt --brief 12   with <unit> = lnord -f lnord_kernelILi8ELi8ELb1ELi1ELi1ELb0ELi2ELi11ELb1E
+==============================================================================================================
+function: _ZN4yskn12lnord_kernelILi8ELi8ELb1ELi1ELi1ELb0ELi2ELi11ELb1EEEvNS_10GemvLaunchE
+  instructions (static, whole function): 1544   code bytes: 0x6080
+  highest general register that appears: R76
+  stack loads/stores via R1 in the whole function: 0
+  .nv.info: register count 80, frame size 0x0, min stack size 0x0
+  loops (back edges), [start, back-branch], instructions, tensor-core instructions:
+    [0x0080, 0x00f0]      8 insns    0 mma  0 nested loop(s)
+    [0x09f0, 0x0a50]      7 insns    0 mma  0 nested loop(s)
+    [0x0b00, 0x0c70]     24 insns    0 mma  0 nested loop(s)
+    [0x1050, 0x10b0]      7 insns    0 mma  0 nested loop(s)
+    [0x1160, 0x12d0]     24 insns    0 mma  0 nested loop(s)
+    [0x14b0, 0x1760]     44 insns    0 mma  0 nested loop(s)
+    [0x1930, 0x1a00]     14 insns    0 mma  0 nested loop(s)
+    [0x1a70, 0x1ad0]      7 insns    0 mma  0 nested loop(s)
+    [0x1d40, 0x1ff0]     44 insns    0 mma  0 nested loop(s)
+    [0x21c0, 0x2290]     14 insns    0 mma  0 nested loop(s)
+    [0x2690, 0x2940]     44 insns    0 mma  0 nested loop(s)
+    [0x2b10, 0x2be0]     14 insns    0 mma  0 nested loop(s)
+    [0x3070, 0x30d0]      7 insns    0 mma  0 nested loop(s)
+    [0x31d0, 0x3400]     36 insns    0 mma  0 nested loop(s)
+    [0x3e50, 0x54e0]    362 insns    8 mma  0 nested loop(s)
+--------------------------------------------------------------------------------------------------------------
+  LOOP [0x3e50, 0x54e0]: 362 instructions per thread (static), 8 tensor-core instruction(s), nested loops: none
+    first: 0x3e50  ISETP.GE.AND P0, PT, R6, UR19, PT
+    last:  0x54e0  BRA.U UP1, 0x3e50
+    basic blocks (start..end, instructions, mma, weight, remark):
+      0x3e50..0x5270   323   8  w=1
+      0x5280..0x54a0    35   0  w=1  can be skipped: forward branch at 0x5270 (BRA.U)
+      (+ 1 blocks shorter than 12 instructions with weight 1, 4 instructions in total, not listed)
+    class                                                            static  weighted   opcodes
+    tensor-core (IMMA/HMMA ...)                                           8         8   IMMA.16832.S8.S8:8
+    shared-memory load (LDS, LDSM)                                       64        64   LDS.U16:64
+    global/generic load (LDG, LD)                                        10        10   LDG.E.128.CONSTANT:8 LDG.E.CONSTANT:2
+    constant-bank load (LDC, LDCU)                                        3         3   LDC.64:3
+    shift / bit-field (SHF SHL SHR BMSK LOP LOP3 SGXT ...)              137       137   LOP3.LUT:68 SHF.R.U32.HI:50 SHF.L.W.U32.HI:14 ULOP3.LUT:2 USHF.R.U32.HI:2 USHF.R.S32.HI:1
+    IMAD by 2^n immediate, IMAD.SHL (= shift[+add])                      55        55   IMAD:33 IMAD.SHL.U32:19 UIMAD.WIDE.U32:1 IMAD.WIDE:1 IMAD.WIDE.U32:1
+    integer multiply 32 bit (IMAD IMUL, non 2^n)                          4         4   UIMAD:2 IMAD:2
+    integer multiply 32x32->64 (+64-bit add) (IMAD.WIDE)                  6         6   IMAD.WIDE:4 IMAD.WIDE.U32:2
+    64-bit add (IADD.64, carry forms .X)                                  3         3   LEA.HI.X:2 IADD.64:1
+    32-bit add / LEA (IADD IADD3 LEA)                                    11        11   LEA:3 IADD:3 ULEA:2 UIADD3:2 LEA.HI:1
+    move / clear (MOV UMOV CS2R R2UR)                                    38        38   MOV:24 CS2R:10 MOV.64:2 UMOV:2
+    compare / select / predicate (ISETP SEL PLOP3 ...)                   11        11   ISETP.GE.AND:3 SEL:2 UISETP.NE.AND:2 ISETP.NE.S64.AND:1 ISETP.NE.AND:1 UISETP.GE.AND:1 PLOP3.LUT:1
+    floating point (FMUL FADD FFMA F2I I2F MUFU ...)                      4         4   FMUL:2 F2I.NTZ:2
+    warp shuffle / vote (SHFL VOTE)                                       2         2   VOTEU.ALL:1 SHFL.IDX:1
+    branch / call / exit (BRA CALL RET EXIT BSSY BSYNC)                   2         2   BRA.U:2
+    padding (NOP, never-true predicate)                                   3         3   UIADD3:3
+    everything else                                                       1         1   S2UR:1
+    TOTAL                                                               362       362
+    predicated instructions in the loop (counted as 1 each): 36
+    stack loads/stores via R1 in the loop: 0
+    distinct general registers referenced in the loop: 69 (highest R76)
+
+$ sass_count.py <unit>.analysed.sass --elf <unit>.nvinfo.txt --brief 12   with <unit> = lnord -f lnord_kernelILi8ELi8ELb1ELi1ELi1ELb0ELi4ELi8ELb1E --weight 0x5290=0.5
+==============================================================================================================
+function: _ZN4yskn12lnord_kernelILi8ELi8ELb1ELi1ELi1ELb0ELi4ELi8ELb1EEEvNS_10GemvLaunchE
+  instructions (static, whole function): 1576   code bytes: 0x6280
+  highest general register that appears: R61
+  stack loads/stores via R1 in the whole function: 4  at 0x1b90 0x24f0 0x3c20 0x52a0
+  .nv.info: register count 64, frame size 0x8, min stack size 0x8
+  loops (back edges), [start, back-branch], instructions, tensor-core instructions:
+    [0x0090, 0x0100]      8 insns    0 mma  0 nested loop(s)
+    [0x0a10, 0x0a70]      7 insns    0 mma  0 nested loop(s)
+    [0x0b20, 0x0c90]     24 insns    0 mma  0 nested loop(s)
+    [0x1070, 0x10d0]      7 insns    0 mma  0 nested loop(s)
+    [0x1180, 0x12f0]     24 insns    0 mma  0 nested loop(s)
+    [0x14d0, 0x1780]     44 insns    0 mma  0 nested loop(s)
+    [0x1950, 0x1a20]     14 insns    0 mma  0 nested loop(s)
+    [0x1a90, 0x1af0]      7 insns    0 mma  0 nested loop(s)
+    [0x1d60, 0x2010]     44 insns    0 mma  0 nested loop(s)
+    [0x21e0, 0x22b0]     14 insns    0 mma  0 nested loop(s)
+    [0x26b0, 0x2960]     44 insns    0 mma  0 nested loop(s)
+    [0x2b30, 0x2c00]     14 insns    0 mma  0 nested loop(s)
+    [0x3080, 0x30e0]      7 insns    0 mma  0 nested loop(s)
+    [0x31e0, 0x3410]     36 insns    0 mma  0 nested loop(s)
+    [0x3e70, 0x5650]    383 insns    8 mma  0 nested loop(s)
+--------------------------------------------------------------------------------------------------------------
+  LOOP [0x3e70, 0x5650]: 383 instructions per thread (static), 8 tensor-core instruction(s), nested loops: none
+    first: 0x3e70  UIADD3 UR9, UPT, UPT, UR5, 0x1, URZ
+    last:  0x5650  BRA.U UP0, 0x3e70
+    basic blocks (start..end, instructions, mma, weight, remark):
+      0x3e70..0x4040    30   0  w=1
+      0x4100..0x5280   281   8  w=1
+      0x5290..0x5510    41   0  w=0.50  can be skipped: forward branch at 0x5280 (BRA.U)
+      0x5520..0x5650    20   0  w=1
+      (+ 1 blocks shorter than 12 instructions with weight 1, 11 instructions in total, not listed)
+    class                                                            static  weighted   opcodes
+    tensor-core (IMMA/HMMA ...)                                           8         8   IMMA.16832.S8.S8:8
+    shared-memory load (LDS, LDSM)                                       64        64   LDS.U16:64
+    global/generic load (LDG, LD)                                        10         9   LDG.E.128.CONSTANT:8 LDG.E.CONSTANT:2
+    constant-bank load (LDC, LDCU)                                        3         2   LDC.64:2 LDCU:1
+    stack load/store via R1 (LDL/STL, [R1+..])                            1      0.50   LDL:1
+    shift / bit-field (SHF SHL SHR BMSK LOP LOP3 SGXT ...)              146       144   LOP3.LUT:75 SHF.R.U32.HI:51 SHF.L.W.U32.HI:14 USHF.R.U32.HI:2 ULOP3.LUT:2 USHF.R.S32.HI:2
+    IMAD by 2^n immediate, IMAD.SHL (= shift[+add])                      55     54.50   IMAD:33 IMAD.SHL.U32:19 UIMAD.WIDE.U32:1 IMAD.WIDE:1 IMAD.WIDE.U32:1
+    integer multiply 32 bit (IMAD IMUL, non 2^n)                          5         4   UIMAD:3 IMAD:2
+    integer multiply 32x32->64 (+64-bit add) (IMAD.WIDE)                  6         3   IMAD.WIDE:4 IMAD.WIDE.U32:2
+    64-bit add (IADD.64, carry forms .X)                                  3         2   LEA.HI.X:2 IADD.64:1
+    32-bit add / LEA (IADD IADD3 LEA)                                    12        10   IADD:3 LEA:3 UIADD3:2 LEA.HI:2 ULEA:2
+    move / clear (MOV UMOV CS2R R2UR)                                    42        38   MOV:25 CS2R:10 UMOV:4 MOV.64:2 R2UR:1
+    compare / select / predicate (ISETP SEL PLOP3 ...)                   10         9   ISETP.GE.AND:3 SEL:2 UISETP.NE.AND:2 UISETP.GE.AND:1 PLOP3.LUT:1 ISETP.NE.S64.AND:1
+    floating point (FMUL FADD FFMA F2I I2F MUFU ...)                      4         2   FMUL:2 F2I.NTZ:2
+    warp shuffle / vote (SHFL VOTE)                                       3         2   VOTEU.ALL:2 SHFL.IDX:1
+    branch / call / exit (BRA CALL RET EXIT BSSY BSYNC)                   5         5   BRA.U:2 BSSY.RECONVERGENT:1 BRA:1 BSYNC.RECONVERGENT:1
+    padding (NOP, never-true predicate)                                   2         2   UIADD3:2
+    everything else                                                       4      3.50   S2R:3 S2UR:1
+    TOTAL                                                               383    362.50
+    predicated instructions in the loop (counted as 1 each): 36
+    stack loads/stores via R1 in the loop: 1
+    distinct general registers referenced in the loop: 57 (highest R60)
+
+$ sass_count.py <unit>.analysed.sass --elf <unit>.nvinfo.txt --brief 12   with <unit> = lnord -f lnord_kernelILi8ELi16ELb1ELi1ELi1ELb0ELi0ELi0ELb0E
+==============================================================================================================
+function: _ZN4yskn12lnord_kernelILi8ELi16ELb1ELi1ELi1ELb0ELi0ELi0ELb0EEEvNS_10GemvLaunchE
+  instructions (static, whole function): 2024   code bytes: 0x7e80
+  highest general register that appears: R125
+  stack loads/stores via R1 in the whole function: 2  at 0x0310 0x6f60
+  .nv.info: register count 128, frame size 0x8, min stack size 0x8
+  loops (back edges), [start, back-branch], instructions, tensor-core instructions:
+    [0x0090, 0x0110]      9 insns    0 mma  0 nested loop(s)
+    [0x0980, 0x09e0]      7 insns    0 mma  0 nested loop(s)
+    [0x0a90, 0x0bf0]     23 insns    0 mma  0 nested loop(s)
+    [0x0fc0, 0x1020]      7 insns    0 mma  0 nested loop(s)
+    [0x10d0, 0x1230]     23 insns    0 mma  0 nested loop(s)
+    [0x1410, 0x16c0]     44 insns    0 mma  0 nested loop(s)
+    [0x1890, 0x1960]     14 insns    0 mma  0 nested loop(s)
+    [0x19d0, 0x1a30]      7 insns    0 mma  0 nested loop(s)
+    [0x1cb0, 0x1f60]     44 insns    0 mma  0 nested loop(s)
+    [0x2130, 0x2200]     14 insns    0 mma  0 nested loop(s)
+    [0x2600, 0x28b0]     44 insns    0 mma  0 nested loop(s)
+    [0x2a80, 0x2b50]     14 insns    0 mma  0 nested loop(s)
+    [0x2f80, 0x3230]     44 insns    0 mma  0 nested loop(s)
+    [0x3400, 0x34d0]     14 insns    0 mma  0 nested loop(s)
+    [0x38e0, 0x3b90]     44 insns    0 mma  0 nested loop(s)
+    [0x3d60, 0x3e30]     14 insns    0 mma  0 nested loop(s)
+    [0x42c0, 0x4320]      7 insns    0 mma  0 nested loop(s)
+    [0x4410, 0x4640]     36 insns    0 mma  0 nested loop(s)
+    [0x5510, 0x6f50]    421 insns   16 mma  0 nested loop(s)
+--------------------------------------------------------------------------------------------------------------
+  LOOP [0x5510, 0x6f50]: 421 instructions per thread (static), 16 tensor-core instruction(s), nested loops: none
+    first: 0x5510  S2R R22, SR_TID.X
+    last:  0x6f50  @P0 BRA 0x5510
+    basic blocks (start..end, instructions, mma, weight, remark):
+      0x5510..0x6ac0   348  16  w=1
+      0x6ad0..0x6e30    55   0  w=1  can be skipped: forward branch at 0x6ac0 (@!P0 BRA)
+      0x6e40..0x6f50    18   0  w=1
+    class                                                            static  weighted   opcodes
+    tensor-core (IMMA/HMMA ...)                                          16        16   IMMA.16832.S8.S8:16
+    shared-memory load (LDS, LDSM)                                       64        64   LDS.U16:64
+    global/generic load (LDG, LD)                                        16        16   LDG.E.128.CONSTANT:12 LDG.E.CONSTANT:4
+    constant-bank load (LDC, LDCU)                                        6         6   LDC.64:6
+    shift / bit-field (SHF SHL SHR BMSK LOP LOP3 SGXT ...)              141       141   LOP3.LUT:74 SHF.R.U32.HI:53 SHF.L.W.U32.HI:14
+    IMAD by 2^n immediate, IMAD.SHL (= shift[+add])                      54        54   IMAD:34 IMAD.SHL.U32:18 IMAD.WIDE.U32:2
+    integer multiply 32 bit (IMAD IMUL, non 2^n)                          2         2   IMAD:2
+    integer multiply 32x32->64 (+64-bit add) (IMAD.WIDE)                  8         8   IMAD.WIDE:8
+    64-bit add (IADD.64, carry forms .X)                                 12        12   IADD.64:8 LEA.HI.X:4
+    32-bit add / LEA (IADD IADD3 LEA)                                    12        12   IADD:5 LEA:5 LEA.HI:1 ULEA:1
+    move / clear (MOV UMOV CS2R R2UR)                                    56        56   MOV:32 CS2R:21 MOV.64:2 UMOV:1
+    compare / select / predicate (ISETP SEL PLOP3 ...)                   14        14   ISETP.GE.AND:7 ISETP.NE.AND:3 ISETP.NE.S64.AND:2 SEL:2
+    floating point (FMUL FADD FFMA F2I I2F MUFU ...)                      8         8   FMUL:4 F2I.NTZ:4
+    warp shuffle / vote (SHFL VOTE)                                       1         1   SHFL.IDX:1
+    branch / call / exit (BRA CALL RET EXIT BSSY BSYNC)                   2         2   BRA:2
+    padding (NOP, never-true predicate)                                   3         3   UIADD3:3
+    everything else                                                       6         6   S2R:5 S2UR:1
+    TOTAL                                                               421       421
+    predicated instructions in the loop (counted as 1 each): 57
+    stack loads/stores via R1 in the loop: 0
+    distinct general registers referenced in the loop: 99 (highest R125)
+
+$ sass_count.py <unit>.analysed.sass --elf <unit>.nvinfo.txt --brief 12   with <unit> = pfa -f pfa_kernelILi6ELi2ELi1ELb0ELi3ELb1E --weight 0x58c0-0x6420=0.5
+==============================================================================================================
+function: _ZN4yskn10pfa_kernelILi6ELi2ELi1ELb0ELi3ELb1EEEvNS_10GemvLaunchE
+  instructions (static, whole function): 2288   code bytes: 0x8f00
+  highest general register that appears: R219
+  stack loads/stores via R1 in the whole function: 0
+  .nv.info: register count 222, frame size 0x0, min stack size 0x0
+  loops (back edges), [start, back-branch], instructions, tensor-core instructions:
+    [0x0070, 0x00f0]      9 insns    0 mma  0 nested loop(s)
+    [0x0580, 0x0600]      9 insns    0 mma  0 nested loop(s)
+    [0x0660, 0x07b0]     22 insns    0 mma  0 nested loop(s)
+    [0x0910, 0x1ee0]    350 insns    0 mma  3 nested loop(s)
+    [0x0ad0, 0x0d00]     36 insns    0 mma  0 nested loop(s)
+    [0x0eb0, 0x0f60]     12 insns    0 mma  0 nested loop(s)
+    [0x1470, 0x16d0]     39 insns    0 mma  0 nested loop(s)
+    [0x1ff0, 0x2310]     51 insns    0 mma  0 nested loop(s)
+    [0x2ae0, 0x6440]    919 insns   64 mma  1 nested loop(s)
+    [0x2ed0, 0x31b0]     47 insns    0 mma  0 nested loop(s)
+--------------------------------------------------------------------------------------------------------------
+  LOOP [0x2ae0, 0x6440]: 919 instructions per thread (static), 64 tensor-core instruction(s), nested loops: [0x2ed0,0x31b0]
+    first: 0x2ae0  ISETP.GE.AND P0, PT, R2, R5, PT
+    last:  0x6440  @P2 BRA 0x2ae0
+    basic blocks (start..end, instructions, mma, weight, remark):
+      0x2ae0..0x2c50    24   0  w=1
+      0x2db0..0x2ec0    18   0  w=1  can be skipped: forward branch at 0x2da0 (@P0 BRA)
+      0x2f50..0x3170    35   0  w=1  can be skipped: forward branch at 0x2f40 (@P0 BRA) and 1 outer; inside nested loop
+      0x3230..0x5890   615  64  w=1  can be skipped: forward branch at 0x3220 (@P3 BRA)
+      0x58c0..0x5910     6   0  w=0.50  can be skipped: forward branch at 0x58b0 (@P0 BRA)
+      0x5920..0x5bc0    43   0  w=0.50  can be skipped: forward branch at 0x5910 (@!P4 BRA) and 1 outer
+      0x5bd0..0x5be0     2   0  w=0.50  can be skipped: forward branch at 0x58b0 (@P0 BRA)
+      0x5bf0..0x5e90    43   0  w=0.50  can be skipped: forward branch at 0x5be0 (@!P3 BRA) and 1 outer
+      0x5ea0..0x5ea0     1   0  w=0.50  can be skipped: forward branch at 0x58b0 (@P0 BRA)
+      0x5eb0..0x6150    43   0  w=0.50  can be skipped: forward branch at 0x5ea0 (@!P0 BRA) and 1 outer
+      0x6160..0x6160     1   0  w=0.50  can be skipped: forward branch at 0x58b0 (@P0 BRA)
+      0x6170..0x6420    44   0  w=0.50  can be skipped: forward branch at 0x6160 (@!P4 BRA) and 1 outer
+      (+ 8 blocks shorter than 12 instructions with weight 1, 44 instructions in total, not listed)
+    class                                                            static  weighted   opcodes
+    tensor-core (IMMA/HMMA ...)                                          64        64   IMMA.16832.S8.S8:64
+    shared-memory load (LDS, LDSM)                                      104       100   LDS.U16:64 LDS.128:32 LDS:8
+    global/generic load (LDG, LD)                                        11         7   LDG.E.CONSTANT:8 LDG.E.128.CONSTANT:3
+    constant-bank load (LDC, LDCU)                                       13         7   LDC.64:8 LDCU:4 LDC:1
+    shift / bit-field (SHF SHL SHR BMSK LOP LOP3 SGXT ...)              157    156.50   LOP3.LUT:82 SHF.R.U32.HI:65 SHF.L.W.U32.HI:10
+    IMAD by 2^n immediate, IMAD.SHL (= shift[+add])                      61        61   IMAD:42 IMAD.SHL.U32:17 IMAD.WIDE.U32:2
+    integer multiply 32 bit (IMAD IMUL, non 2^n)                          1         1   IMAD:1
+    integer multiply 32x32->64 (+64-bit add) (IMAD.WIDE)                 34        18   IMAD.WIDE:32 IMAD.WIDE.U32:2
+    64-bit add (IADD.64, carry forms .X)                                 26        18   IADD.64:18 LEA.HI.X:8
+    32-bit add / LEA (IADD IADD3 LEA)                                    71        67   IADD:59 LEA:9 LEA.HI:1 UIADD3:1 ULEA:1
+    move / clear (MOV UMOV CS2R R2UR)                                   294       261   MOV:275 UMOV:19
+    compare / select / predicate (ISETP SEL PLOP3 ...)                   24        18   ISETP.GE.AND:16 ISETP.NE.AND:3 ISETP.GE.OR:2 SEL:2 ISETP.GE.U32.AND:1
+    floating point (FMUL FADD FFMA F2I I2F MUFU ...)                     16         8   FMUL:8 F2I.NTZ:8
+    warp shuffle / vote (SHFL VOTE)                                       1         1   SHFL.IDX:1
+    branch / call / exit (BRA CALL RET EXIT BSSY BSYNC)                  19        17   BRA:11 BSSY.RECONVERGENT:4 BSYNC.RECONVERGENT:4
+    barrier / async copy (BAR LDGSTS LDGDEPBAR DEPBAR ...)               15        15   LDGSTS.E.64:8 WARPSYNC.ALL:3 LDGDEPBAR:2 DEPBAR.LE:1 BAR.SYNC.DEFER_BLOCKING:1
+    padding (NOP, never-true predicate)                                   5         5   LDS:3 UIADD3:2
+    everything else                                                       3         3   S2UR:2 S2R:1
+    TOTAL                                                               919    827.50
+    predicated instructions in the loop (counted as 1 each): 90
+    stack loads/stores via R1 in the loop: 0
+    distinct general registers referenced in the loop: 157 (highest R219)
+
+$ sass_count.py <unit>.analysed.sass --elf <unit>.nvinfo.txt --brief 12   with <unit> = pfa -f pfa_kernelILi6ELi2ELi1ELb0ELi1ELb1E
+==============================================================================================================
+function: _ZN4yskn10pfa_kernelILi6ELi2ELi1ELb0ELi1ELb1EEEvNS_10GemvLaunchE
+  instructions (static, whole function): 2320   code bytes: 0x9100
+  highest general register that appears: R164
+  stack loads/stores via R1 in the whole function: 0
+  .nv.info: register count 167, frame size 0x0, min stack size 0x0
+  loops (back edges), [start, back-branch], instructions, tensor-core instructions:
+    [0x0070, 0x00e0]      8 insns    0 mma  0 nested loop(s)
+    [0x05d0, 0x0660]     10 insns    0 mma  0 nested loop(s)
+    [0x06d0, 0x0840]     24 insns    0 mma  0 nested loop(s)
+    [0x0a00, 0x1fc0]    349 insns    0 mma  3 nested loop(s)
+    [0x0bc0, 0x0df0]     36 insns    0 mma  0 nested loop(s)
+    [0x0fa0, 0x1050]     12 insns    0 mma  0 nested loop(s)
+    [0x1550, 0x17b0]     39 insns    0 mma  0 nested loop(s)
+    [0x20d0, 0x23f0]     51 insns    0 mma  0 nested loop(s)
+    [0x2a50, 0x6650]    961 insns   64 mma  1 nested loop(s)
+    [0x2d70, 0x3130]     61 insns    0 mma  0 nested loop(s)
+--------------------------------------------------------------------------------------------------------------
+  LOOP [0x2a50, 0x6650]: 961 instructions per thread (static), 64 tensor-core instruction(s), nested loops: [0x2d70,0x3130]
+    first: 0x2a50  MOV R14, R6
+    last:  0x6650  @P0 BRA 0x2a50
+    basic blocks (start..end, instructions, mma, weight, remark):
+      0x2a50..0x2bb0    23   0  w=1
+      0x2bc0..0x2c90    14   0  w=1  can be skipped: forward branch at 0x2bb0 (@P0 BRA)
+      0x2df0..0x30f0    49   0  w=1  can be skipped: forward branch at 0x2de0 (@P2 BRA) and 1 outer; inside nested loop
+      0x3190..0x5920   634  64  w=1  can be skipped: forward branch at 0x3180 (@P0 BRA)
+      0x59b0..0x5cb0    49   0  w=1  can be skipped: forward branch at 0x59a0 (BRA.U) and 1 outer
+      0x5cd0..0x5fd0    49   0  w=1  can be skipped: forward branch at 0x5cc0 (BRA.U) and 1 outer
+      0x5ff0..0x62f0    49   0  w=1  can be skipped: forward branch at 0x5fe0 (BRA.U) and 1 outer
+      0x6310..0x6610    49   0  w=1  can be skipped: forward branch at 0x6300 (BRA.U) and 1 outer
+      (+ 12 blocks shorter than 12 instructions with weight 1, 45 instructions in total, not listed)
+    class                                                            static  weighted   opcodes
+    tensor-core (IMMA/HMMA ...)                                          64        64   IMMA.16832.S8.S8:64
+    shared-memory load (LDS, LDSM)                                      104       104   LDS.U16:64 LDS.128:32 LDS:8
+    global/generic load (LDG, LD)                                        11        11   LDG.E.CONSTANT:8 LDG.E.128.CONSTANT:3
+    constant-bank load (LDC, LDCU)                                       13        13   LDC.64:8 LDCU:4 LDC:1
+    shift / bit-field (SHF SHL SHR BMSK LOP LOP3 SGXT ...)              169       169   LOP3.LUT:86 SHF.R.U32.HI:65 SHF.L.W.U32.HI:10 USHF.R.S32.HI:8
+    IMAD by 2^n immediate, IMAD.SHL (= shift[+add])                      62        62   IMAD:42 IMAD.SHL.U32:18 IMAD.WIDE.U32:2
+    integer multiply 32 bit (IMAD IMUL, non 2^n)                          9         9   IMAD:9
+    integer multiply 32x32->64 (+64-bit add) (IMAD.WIDE)                 42        42   IMAD.WIDE:32 IMAD.WIDE.U32:10
+    64-bit add (IADD.64, carry forms .X)                                 18        18   IADD.64:10 LEA.HI.X:8
+    32-bit add / LEA (IADD IADD3 LEA)                                    75        75   IADD:62 LEA:10 LEA.HI:1 UIADD3:1 ULEA:1
+    move / clear (MOV UMOV CS2R R2UR)                                   301       301   MOV:282 UMOV:19
+    compare / select / predicate (ISETP SEL PLOP3 ...)                   23        23   ISETP.GE.AND:11 UISETP.GE.AND:4 ISETP.NE.AND:2 SEL:2 ISETP.GE.OR:1 ISETP.GE.U32.AND:1 ISETP.EQ.OR:1 UVIMNMX.S32:1
+    floating point (FMUL FADD FFMA F2I I2F MUFU ...)                     16        16   FMUL:8 F2I.NTZ:8
+    warp shuffle / vote (SHFL VOTE)                                       9         9   VOTEU.ALL:8 SHFL.IDX:1
+    branch / call / exit (BRA CALL RET EXIT BSSY BSYNC)                  19        19   BRA:7 BSSY.RECONVERGENT:4 BSYNC.RECONVERGENT:4 BRA.U:4
+    barrier / async copy (BAR LDGSTS LDGDEPBAR DEPBAR ...)               15        15   LDGSTS.E.64:8 WARPSYNC.ALL:3 LDGDEPBAR:2 DEPBAR.LE:1 BAR.SYNC.DEFER_BLOCKING:1
+    padding (NOP, never-true predicate)                                   5         5   LDS:3 UIADD3:2
+    everything else                                                       6         6   S2R:4 S2UR:2
+    TOTAL                                                               961       961
+    predicated instructions in the loop (counted as 1 each): 101
+    stack loads/stores via R1 in the loop: 0
+    distinct general registers referenced in the loop: 130 (highest R164)
+
+$ sass_count.py <unit>.analysed.sass --elf <unit>.nvinfo.txt --brief 12   with <unit> = pfa -f pfa_kernelILi8ELi2ELi1ELb0ELi3ELb1E
+==============================================================================================================
+function: _ZN4yskn10pfa_kernelILi8ELi2ELi1ELb0ELi3ELb1EEEvNS_10GemvLaunchE
+  instructions (static, whole function): 2272   code bytes: 0x8e00
+  highest general register that appears: R221
+  stack loads/stores via R1 in the whole function: 0
+  .nv.info: register count 224, frame size 0x0, min stack size 0x0
+  loops (back edges), [start, back-branch], instructions, tensor-core instructions:
+    [0x0070, 0x00f0]      9 insns    0 mma  0 nested loop(s)
+    [0x05a0, 0x0620]      9 insns    0 mma  0 nested loop(s)
+    [0x0680, 0x07d0]     22 insns    0 mma  0 nested loop(s)
+    [0x0930, 0x1f30]    353 insns    0 mma  3 nested loop(s)
+    [0x0af0, 0x0d20]     36 insns    0 mma  0 nested loop(s)
+    [0x0ed0, 0x0f80]     12 insns    0 mma  0 nested loop(s)
+    [0x14a0, 0x1700]     39 insns    0 mma  0 nested loop(s)
+    [0x2040, 0x2360]     51 insns    0 mma  0 nested loop(s)
+    [0x2b30, 0x6360]    900 insns   64 mma  1 nested loop(s)
+    [0x2f60, 0x3240]     47 insns    0 mma  0 nested loop(s)
+--------------------------------------------------------------------------------------------------------------
+  LOOP [0x2b30, 0x6360]: 900 instructions per thread (static), 64 tensor-core instruction(s), nested loops: [0x2f60,0x3240]
+    first: 0x2b30  ISETP.GE.AND P0, PT, R2, R3, PT
+    last:  0x6360  @P2 BRA 0x2b30
+    basic blocks (start..end, instructions, mma, weight, remark):
+      0x2b30..0x2ce0    28   0  w=1
+      0x2d90..0x2e40    12   0  w=1
+      0x2e50..0x2f50    17   0  w=1  can be skipped: forward branch at 0x2e40 (@P0 BRA)
+      0x2fe0..0x3200    35   0  w=1  can be skipped: forward branch at 0x2fd0 (@P0 BRA) and 1 outer; inside nested loop
+      0x32c0..0x57b0   592  64  w=1  can be skipped: forward branch at 0x32b0 (@P3 BRA)
+      0x5840..0x5ae0    43   0  w=1  can be skipped: forward branch at 0x5830 (@!P4 BRA) and 1 outer
+      0x5b10..0x5db0    43   0  w=1  can be skipped: forward branch at 0x5b00 (@!P3 BRA) and 1 outer
+      0x5dd0..0x6070    43   0  w=1  can be skipped: forward branch at 0x5dc0 (@!P0 BRA) and 1 outer
+      0x6090..0x6340    44   0  w=1  can be skipped: forward branch at 0x6080 (@!P4 BRA) and 1 outer
+      (+ 11 blocks shorter than 12 instructions with weight 1, 43 instructions in total, not listed)
+    class                                                            static  weighted   opcodes
+    tensor-core (IMMA/HMMA ...)                                          64        64   IMMA.16832.S8.S8:64
+    shared-memory load (LDS, LDSM)                                      104       104   LDS.U16:64 LDS.128:32 LDS:8
+    global/generic load (LDG, LD)                                        12        12   LDG.E.CONSTANT:8 LDG.E.128.CONSTANT:4
+    constant-bank load (LDC, LDCU)                                       13        13   LDC.64:8 LDCU:4 LDC:1
+    shift / bit-field (SHF SHL SHR BMSK LOP LOP3 SGXT ...)              140       140   LOP3.LUT:74 SHF.R.U32.HI:52 SHF.L.W.U32.HI:14
+    IMAD by 2^n immediate, IMAD.SHL (= shift[+add])                      59        59   IMAD:34 IMAD.SHL.U32:22 IMAD.WIDE.U32:3
+    integer multiply 32 bit (IMAD IMUL, non 2^n)                          1         1   IMAD:1
+    integer multiply 32x32->64 (+64-bit add) (IMAD.WIDE)                 33        33   IMAD.WIDE:32 IMAD.WIDE.U32:1
+    64-bit add (IADD.64, carry forms .X)                                 26        26   IADD.64:18 LEA.HI.X:8
+    32-bit add / LEA (IADD IADD3 LEA)                                    79        79   IADD:67 LEA:9 LEA.HI:1 UIADD3:1 ULEA:1
+    move / clear (MOV UMOV CS2R R2UR)                                   286       286   MOV:267 UMOV:19
+    compare / select / predicate (ISETP SEL PLOP3 ...)                   24        24   ISETP.GE.AND:16 ISETP.NE.AND:3 ISETP.GE.OR:2 SEL:2 ISETP.GE.U32.AND:1
+    floating point (FMUL FADD FFMA F2I I2F MUFU ...)                     16        16   FMUL:8 F2I.NTZ:8
+    warp shuffle / vote (SHFL VOTE)                                       1         1   SHFL.IDX:1
+    branch / call / exit (BRA CALL RET EXIT BSSY BSYNC)                  19        19   BRA:11 BSSY.RECONVERGENT:4 BSYNC.RECONVERGENT:4
+    barrier / async copy (BAR LDGSTS LDGDEPBAR DEPBAR ...)               15        15   LDGSTS.E.64:8 WARPSYNC.ALL:3 LDGDEPBAR:2 DEPBAR.LE:1 BAR.SYNC.DEFER_BLOCKING:1
+    padding (NOP, never-true predicate)                                   5         5   LDS:3 UIADD3:2
+    everything else                                                       3         3   S2UR:2 S2R:1
+    TOTAL                                                               900       900
+    predicated instructions in the loop (counted as 1 each): 91
+    stack loads/stores via R1 in the loop: 0
+    distinct general registers referenced in the loop: 163 (highest R221)
+
+$ sass_count.py <unit>.analysed.sass --elf <unit>.nvinfo.txt --brief 12   with <unit> = q35_g6 -f mt_gemm6_kernelILi4ELb0ELb0E --range 0x3d10:0x9e20 --weight 0x3d80-0x4420=0.0125 --weight 0x4980-0x5010=0.0125 --weight 0x54e0-0x5b70=0.0125 --weight 0x6050-0x66e0=0.0125 --weight 0x6bb0-0x7240=0.0125 --weight 0x7730-0x7dc0=0.0125 --weight 0x82a0-0x8910=0.0125 --weight 0x8df0-0x9460=0.0125
+==============================================================================================================
+function: _ZN4yskn15mt_gemm6_kernelILi4ELb0ELb0EEEvNS_9Q35G6ArgsEiiPxPi
+  instructions (static, whole function): 3720   code bytes: 0xe880
+  highest general register that appears: R250
+  stack loads/stores via R1 in the whole function: 0
+  .nv.info: register count 254, frame size 0x0, min stack size 0x0
+  loops (back edges), [start, back-branch], instructions, tensor-core instructions:
+    [0x1d60, 0xda40]   3023 insns  256 mma  5 nested loop(s)
+    [0x2300, 0x2530]     36 insns    0 mma  0 nested loop(s)
+    [0x26e0, 0x2790]     12 insns    0 mma  0 nested loop(s)
+    [0x2a10, 0x2c80]     40 insns    0 mma  0 nested loop(s)
+    [0x3720, 0x3940]     35 insns    0 mma  0 nested loop(s)
+    [0xa940, 0xa9b0]      8 insns    0 mma  0 nested loop(s)
+--------------------------------------------------------------------------------------------------------------
+  RANGE (given with --range, not a detected loop) [0x3d10, 0x9e20]: 1554 instructions per thread (static), 256 tensor-core instruction(s), nested loops: none
+    first: 0x3d10  DEPBAR.LE SB0, 0x2
+    last:  0x9e20  @P0 BRA P1, 0xd9e0
+    basic blocks (start..end, instructions, mma, weight, remark):
+      0x3d80..0x4180    65   0  w=0.01  can be skipped: forward branch at 0x3d70 (@P0 BRA)
+      0x4190..0x41e0     6   0  w=0.01  can be skipped: forward branch at 0x4180 (@!P0 BRA) and 1 outer
+      0x41f0..0x4220     4   0  w=0.01  can be skipped: forward branch at 0x41e0 (BRA) and 1 outer
+      0x4230..0x4290     7   0  w=0.01  can be skipped: forward branch at 0x3d70 (@P0 BRA)
+      0x42a0..0x42f0     6   0  w=0.01  can be skipped: forward branch at 0x4290 (@!P0 BRA) and 1 outer
+      0x4300..0x4330     4   0  w=0.01  can be skipped: forward branch at 0x42f0 (BRA) and 1 outer
+      0x4340..0x4420    15   0  w=0.01  can be skipped: forward branch at 0x3d70 (@P0 BRA)
+      0x4430..0x4970    85  32  w=1
+      0x4980..0x4d70    64   0  w=0.01  can be skipped: forward branch at 0x4970 (@P0 BRA)
+      0x4d80..0x4dd0     6   0  w=0.01  can be skipped: forward branch at 0x4d70 (@!P1 BRA) and 1 outer
+      0x4de0..0x4e10     4   0  w=0.01  can be skipped: forward branch at 0x4dd0 (BRA) and 1 outer
+      0x4e20..0x4e80     7   0  w=0.01  can be skipped: forward branch at 0x4970 (@P0 BRA)
+      0x4e90..0x4ee0     6   0  w=0.01  can be skipped: forward branch at 0x4e80 (@!P1 BRA) and 1 outer
+      0x4ef0..0x4f20     4   0  w=0.01  can be skipped: forward branch at 0x4ee0 (BRA) and 1 outer
+      0x4f30..0x5010    15   0  w=0.01  can be skipped: forward branch at 0x4970 (@P0 BRA)
+      0x5020..0x54d0    76  32  w=1
+      0x54e0..0x58d0    64   0  w=0.01  can be skipped: forward branch at 0x54d0 (@P0 BRA)
+      0x58e0..0x5930     6   0  w=0.01  can be skipped: forward branch at 0x58d0 (@!P1 BRA) and 1 outer
+      0x5940..0x5970     4   0  w=0.01  can be skipped: forward branch at 0x5930 (BRA) and 1 outer
+      0x5980..0x59e0     7   0  w=0.01  can be skipped: forward branch at 0x54d0 (@P0 BRA)
+      0x59f0..0x5a40     6   0  w=0.01  can be skipped: forward branch at 0x59e0 (@!P1 BRA) and 1 outer
+      0x5a50..0x5a80     4   0  w=0.01  can be skipped: forward branch at 0x5a40 (BRA) and 1 outer
+      0x5a90..0x5b70    15   0  w=0.01  can be skipped: forward branch at 0x54d0 (@P0 BRA)
+      0x5b80..0x6040    77  32  w=1
+      0x6050..0x6440    64   0  w=0.01  can be skipped: forward branch at 0x6040 (@P0 BRA)
+      0x6450..0x64a0     6   0  w=0.01  can be skipped: forward branch at 0x6440 (@!P1 BRA) and 1 outer
+      0x64b0..0x64e0     4   0  w=0.01  can be skipped: forward branch at 0x64a0 (BRA) and 1 outer
+      0x64f0..0x6550     7   0  w=0.01  can be skipped: forward branch at 0x6040 (@P0 BRA)
+      0x6560..0x65b0     6   0  w=0.01  can be skipped: forward branch at 0x6550 (@!P1 BRA) and 1 outer
+      0x65c0..0x65f0     4   0  w=0.01  can be skipped: forward branch at 0x65b0 (BRA) and 1 outer
+      0x6600..0x66e0    15   0  w=0.01  can be skipped: forward branch at 0x6040 (@P0 BRA)
+      0x66f0..0x6ba0    76  32  w=1
+      0x6bb0..0x6fa0    64   0  w=0.01  can be skipped: forward branch at 0x6ba0 (@P0 BRA)
+      0x6fb0..0x7000     6   0  w=0.01  can be skipped: forward branch at 0x6fa0 (@!P1 BRA) and 1 outer
+      0x7010..0x7040     4   0  w=0.01  can be skipped: forward branch at 0x7000 (BRA) and 1 outer
+      0x7050..0x70b0     7   0  w=0.01  can be skipped: forward branch at 0x6ba0 (@P0 BRA)
+      0x70c0..0x7110     6   0  w=0.01  can be skipped: forward branch at 0x70b0 (@!P1 BRA) and 1 outer
+      0x7120..0x7150     4   0  w=0.01  can be skipped: forward branch at 0x7110 (BRA) and 1 outer
+      0x7160..0x7240    15   0  w=0.01  can be skipped: forward branch at 0x6ba0 (@P0 BRA)
+      0x7250..0x76d0    73  32  w=1
+      0x7730..0x7b20    64   0  w=0.01  can be skipped: forward branch at 0x7720 (@P0 BRA) and 1 outer
+      0x7b30..0x7b80     6   0  w=0.01  can be skipped: forward branch at 0x7b20 (@!P2 BRA) and 2 outer
+      0x7b90..0x7bc0     4   0  w=0.01  can be skipped: forward branch at 0x7b80 (BRA) and 2 outer
+      0x7bd0..0x7c30     7   0  w=0.01  can be skipped: forward branch at 0x7720 (@P0 BRA) and 1 outer
+      0x7c40..0x7c90     6   0  w=0.01  can be skipped: forward branch at 0x7c30 (@!P2 BRA) and 2 outer
+      0x7ca0..0x7cd0     4   0  w=0.01  can be skipped: forward branch at 0x7c90 (BRA) and 2 outer
+      0x7ce0..0x7dc0    15   0  w=0.01  can be skipped: forward branch at 0x7720 (@P0 BRA) and 1 outer
+      0x7dd0..0x7f10    21   0  w=1  can be skipped: forward branch at 0x76d0 (@!P1 BRA)
+      0x7f20..0x8240    51  32  w=1
+      0x82a0..0x8670    62   0  w=0.01  can be skipped: forward branch at 0x8290 (@P0 BRA) and 1 outer
+      0x8680..0x86d0     6   0  w=0.01  can be skipped: forward branch at 0x8670 (@!P2 BRA) and 2 outer
+      0x86e0..0x8710     4   0  w=0.01  can be skipped: forward branch at 0x86d0 (BRA) and 2 outer
+      0x8720..0x8780     7   0  w=0.01  can be skipped: forward branch at 0x8290 (@P0 BRA) and 1 outer
+      0x8790..0x87e0     6   0  w=0.01  can be skipped: forward branch at 0x8780 (@!P2 BRA) and 2 outer
+      0x87f0..0x8820     4   0  w=0.01  can be skipped: forward branch at 0x87e0 (BRA) and 2 outer
+      0x8830..0x8910    15   0  w=0.01  can be skipped: forward branch at 0x8290 (@P0 BRA) and 1 outer
+      0x8920..0x8a60    21   0  w=1  can be skipped: forward branch at 0x8240 (@!P1 BRA)
+      0x8a70..0x8d90    51  32  w=1
+      0x8df0..0x91c0    62   0  w=0.01  can be skipped: forward branch at 0x8de0 (@P0 BRA) and 1 outer
+      0x91d0..0x9220     6   0  w=0.01  can be skipped: forward branch at 0x91c0 (@!P1 BRA) and 2 outer
+      0x9230..0x9260     4   0  w=0.01  can be skipped: forward branch at 0x9220 (BRA) and 2 outer
+      0x9270..0x92d0     7   0  w=0.01  can be skipped: forward branch at 0x8de0 (@P0 BRA) and 1 outer
+      0x92e0..0x9330     6   0  w=0.01  can be skipped: forward branch at 0x92d0 (@!P1 BRA) and 2 outer
+      0x9340..0x9370     4   0  w=0.01  can be skipped: forward branch at 0x9330 (BRA) and 2 outer
+      0x9380..0x9460    15   0  w=0.01  can be skipped: forward branch at 0x8de0 (@P0 BRA) and 1 outer
+      0x9470..0x95b0    21   0  w=1  can be skipped: forward branch at 0x8d90 (@!P1 BRA)
+      0x95c0..0x9e20   135  32  w=1
+      (+ 4 blocks shorter than 12 instructions with weight 1, 22 instructions in total, not listed)
+    class                                                            static  weighted   opcodes
+    tensor-core (IMMA/HMMA ...)                                         256       256   IMMA.16832.S8.S8:256
+    shared-memory load (LDS, LDSM)                                      104       104   LDSM.16.M88.4:64 LDS.128:32 LDS:8
+    constant-bank load (LDC, LDCU)                                      114      2.41   LDC:49 LDC.64:32 LDCU:17 LDCU.64:16
+    shift / bit-field (SHF SHL SHR BMSK LOP LOP3 SGXT ...)               78      6.90   LOP3.LUT:53 SHF.R.U32.HI:9 SHF.R.S32.HI:8 SHF.L.U64.HI:8
+    IMAD by 2^n immediate, IMAD.SHL (= shift[+add])                      57     17.50   IMAD.WIDE:32 IMAD.SHL.U32:17 IMAD:8
+    integer multiply 32 bit (IMAD IMUL, non 2^n)                         90      3.10   IMAD:58 IMAD.HI.U32:32
+    integer multiply 32x32->64 (+64-bit add) (IMAD.WIDE)                 80     64.20   IMAD.WIDE:80
+    64-bit add (IADD.64, carry forms .X)                                 40     16.30   IADD.64:40
+    32-bit add / LEA (IADD IADD3 LEA)                                   203     37.10   IADD:166 IABS:32 UIADD3:2 ULEA:1 LEA:1 LEA.HI:1
+    move / clear (MOV UMOV CS2R R2UR)                                    93     10.05   MOV:76 MOV.64:16 UMOV:1
+    compare / select / predicate (ISETP SEL PLOP3 ...)                  201     74.60   ISETP.NE.AND:74 ISETP.GE.AND:48 SEL:29 ISETP.GT.U32.AND:16 ISETP.GE.U32.AND:16 ISETP.NE.OR:8 VIMNMX.S32:8 UISETP.NE.AND:1
+    floating point (FMUL FADD FFMA F2I I2F MUFU ...)                     48      0.60   I2F.RP:16 MUFU.RCP:16 F2I.FTZ.U32.TRUNC.NTZ:16
+    branch / call / exit (BRA CALL RET EXIT BSSY BSYNC)                  99     35.80   BRA:44 BSSY.RECONVERGENT:27 BSYNC.RECONVERGENT:27 BSSY:1
+    barrier / async copy (BAR LDGSTS LDGDEPBAR DEPBAR ...)               57        57   LDGSTS.E.BYPASS.128:32 DEPBAR.LE:8 BAR.SYNC.DEFER_BLOCKING:8 LDGDEPBAR:8 WARPSYNC.ALL:1
+    padding (NOP, never-true predicate)                                  33        33   LDS:24 UIADD3:9
+    everything else                                                       1         1   S2UR:1
+    TOTAL                                                              1554    719.56
+    predicated instructions in the loop (counted as 1 each): 221
+    stack loads/stores via R1 in the loop: 0
+    distinct general registers referenced in the loop: 172 (highest R246)
+
+$ sass_count.py <unit>.analysed.sass --elf <unit>.nvinfo.txt --brief 12   with <unit> = q35_g6 -f mt_gemm6_kernelILi2ELb1ELb0E --range 0x35e0:0x8390 --weight 0x3630-0x3c10=0.0037 --weight 0x3f80-0x4550=0.0037 --weight 0x48a0-0x4e70=0.0037 --weight 0x51c0-0x5790=0.0037 --weight 0x5af0-0x60c0=0.0037 --weight 0x6410-0x69e0=0.0037 --weight 0x6d10-0x72d0=0.0037 --weight 0x7600-0x7bc0=0.0037
+==============================================================================================================
+function: _ZN4yskn15mt_gemm6_kernelILi2ELb1ELb0EEEvNS_9Q35G6ArgsEiiPxPi
+  instructions (static, whole function): 2864   code bytes: 0xb300
+  highest general register that appears: R181
+  stack loads/stores via R1 in the whole function: 0
+  .nv.info: register count 184, frame size 0x0, min stack size 0x0
+  loops (back edges), [start, back-branch], instructions, tensor-core instructions:
+    [0x1b40, 0xa540]   2209 insns  128 mma  4 nested loop(s)
+    [0x20a0, 0x22d0]     36 insns    0 mma  0 nested loop(s)
+    [0x2480, 0x2530]     12 insns    0 mma  0 nested loop(s)
+    [0x2780, 0x29f0]     40 insns    0 mma  0 nested loop(s)
+    [0x8a80, 0x8af0]      8 insns    0 mma  0 nested loop(s)
+--------------------------------------------------------------------------------------------------------------
+  RANGE (given with --range, not a detected loop) [0x35e0, 0x8390]: 1244 instructions per thread (static), 128 tensor-core instruction(s), nested loops: none
+    first: 0x35e0  DEPBAR.LE SB0, 0x2
+    last:  0x8390  @P1 BRA P2, 0xa500
+    basic blocks (start..end, instructions, mma, weight, remark):
+      0x3630..0x3a10    63   0  w=0.00  can be skipped: forward branch at 0x3620 (@P0 BRA)
+      0x3a20..0x3a70     6   0  w=0.00  can be skipped: forward branch at 0x3a10 (@!P0 BRA) and 1 outer
+      0x3a80..0x3a90     2   0  w=0.00  can be skipped: forward branch at 0x3a70 (BRA) and 1 outer
+      0x3aa0..0x3ae0     5   0  w=0.00  can be skipped: forward branch at 0x3620 (@P0 BRA)
+      0x3af0..0x3b40     6   0  w=0.00  can be skipped: forward branch at 0x3ae0 (@!P0 BRA) and 1 outer
+      0x3b50..0x3b60     2   0  w=0.00  can be skipped: forward branch at 0x3b40 (BRA) and 1 outer
+      0x3b70..0x3c10    11   0  w=0.00  can be skipped: forward branch at 0x3620 (@P0 BRA)
+      0x3c20..0x3f70    54  16  w=1
+      0x3f80..0x4350    62   0  w=0.00  can be skipped: forward branch at 0x3f70 (@P0 BRA)
+      0x4360..0x43b0     6   0  w=0.00  can be skipped: forward branch at 0x4350 (@!P0 BRA) and 1 outer
+      0x43c0..0x43d0     2   0  w=0.00  can be skipped: forward branch at 0x43b0 (BRA) and 1 outer
+      0x43e0..0x4420     5   0  w=0.00  can be skipped: forward branch at 0x3f70 (@P0 BRA)
+      0x4430..0x4480     6   0  w=0.00  can be skipped: forward branch at 0x4420 (@!P0 BRA) and 1 outer
+      0x4490..0x44a0     2   0  w=0.00  can be skipped: forward branch at 0x4480 (BRA) and 1 outer
+      0x44b0..0x4550    11   0  w=0.00  can be skipped: forward branch at 0x3f70 (@P0 BRA)
+      0x4560..0x4890    52  16  w=1
+      0x48a0..0x4c70    62   0  w=0.00  can be skipped: forward branch at 0x4890 (@P0 BRA)
+      0x4c80..0x4cd0     6   0  w=0.00  can be skipped: forward branch at 0x4c70 (@!P0 BRA) and 1 outer
+      0x4ce0..0x4cf0     2   0  w=0.00  can be skipped: forward branch at 0x4cd0 (BRA) and 1 outer
+      0x4d00..0x4d40     5   0  w=0.00  can be skipped: forward branch at 0x4890 (@P0 BRA)
+      0x4d50..0x4da0     6   0  w=0.00  can be skipped: forward branch at 0x4d40 (@!P0 BRA) and 1 outer
+      0x4db0..0x4dc0     2   0  w=0.00  can be skipped: forward branch at 0x4da0 (BRA) and 1 outer
+      0x4dd0..0x4e70    11   0  w=0.00  can be skipped: forward branch at 0x4890 (@P0 BRA)
+      0x4e80..0x51b0    52  16  w=1
+      0x51c0..0x5590    62   0  w=0.00  can be skipped: forward branch at 0x51b0 (@P0 BRA)
+      0x55a0..0x55f0     6   0  w=0.00  can be skipped: forward branch at 0x5590 (@!P0 BRA) and 1 outer
+      0x5600..0x5610     2   0  w=0.00  can be skipped: forward branch at 0x55f0 (BRA) and 1 outer
+      0x5620..0x5660     5   0  w=0.00  can be skipped: forward branch at 0x51b0 (@P0 BRA)
+      0x5670..0x56c0     6   0  w=0.00  can be skipped: forward branch at 0x5660 (@!P0 BRA) and 1 outer
+      0x56d0..0x56e0     2   0  w=0.00  can be skipped: forward branch at 0x56c0 (BRA) and 1 outer
+      0x56f0..0x5790    11   0  w=0.00  can be skipped: forward branch at 0x51b0 (@P0 BRA)
+      0x57a0..0x5ae0    53  16  w=1
+      0x5af0..0x5ec0    62   0  w=0.00  can be skipped: forward branch at 0x5ae0 (@P0 BRA)
+      0x5ed0..0x5f20     6   0  w=0.00  can be skipped: forward branch at 0x5ec0 (@!P0 BRA) and 1 outer
+      0x5f30..0x5f40     2   0  w=0.00  can be skipped: forward branch at 0x5f20 (BRA) and 1 outer
+      0x5f50..0x5f90     5   0  w=0.00  can be skipped: forward branch at 0x5ae0 (@P0 BRA)
+      0x5fa0..0x5ff0     6   0  w=0.00  can be skipped: forward branch at 0x5f90 (@!P0 BRA) and 1 outer
+      0x6000..0x6010     2   0  w=0.00  can be skipped: forward branch at 0x5ff0 (BRA) and 1 outer
+      0x6020..0x60c0    11   0  w=0.00  can be skipped: forward branch at 0x5ae0 (@P0 BRA)
+      0x60d0..0x63c0    48  16  w=1
+      0x6410..0x67e0    62   0  w=0.00  can be skipped: forward branch at 0x6400 (@P0 BRA) and 1 outer
+      0x67f0..0x6840     6   0  w=0.00  can be skipped: forward branch at 0x67e0 (@!P0 BRA) and 2 outer
+      0x6850..0x6860     2   0  w=0.00  can be skipped: forward branch at 0x6840 (BRA) and 2 outer
+      0x6870..0x68b0     5   0  w=0.00  can be skipped: forward branch at 0x6400 (@P0 BRA) and 1 outer
+      0x68c0..0x6910     6   0  w=0.00  can be skipped: forward branch at 0x68b0 (@!P0 BRA) and 2 outer
+      0x6920..0x6930     2   0  w=0.00  can be skipped: forward branch at 0x6910 (BRA) and 2 outer
+      0x6940..0x69e0    11   0  w=0.00  can be skipped: forward branch at 0x6400 (@P0 BRA) and 1 outer
+      0x69f0..0x6af0    17   0  w=1  can be skipped: forward branch at 0x63c0 (@!P1 BRA)
+      0x6b00..0x6cc0    29  16  w=1
+      0x6d10..0x70d0    61   0  w=0.00  can be skipped: forward branch at 0x6d00 (@P0 BRA) and 1 outer
+      0x70e0..0x7130     6   0  w=0.00  can be skipped: forward branch at 0x70d0 (@!P0 BRA) and 2 outer
+      0x7140..0x7150     2   0  w=0.00  can be skipped: forward branch at 0x7130 (BRA) and 2 outer
+      0x7160..0x71a0     5   0  w=0.00  can be skipped: forward branch at 0x6d00 (@P0 BRA) and 1 outer
+      0x71b0..0x7200     6   0  w=0.00  can be skipped: forward branch at 0x71a0 (@!P0 BRA) and 2 outer
+      0x7210..0x7220     2   0  w=0.00  can be skipped: forward branch at 0x7200 (BRA) and 2 outer
+      0x7230..0x72d0    11   0  w=0.00  can be skipped: forward branch at 0x6d00 (@P0 BRA) and 1 outer
+      0x72e0..0x73e0    17   0  w=1  can be skipped: forward branch at 0x6cc0 (@!P1 BRA)
+      0x73f0..0x75b0    29  16  w=1
+      0x7600..0x79c0    61   0  w=0.00  can be skipped: forward branch at 0x75f0 (@P0 BRA) and 1 outer
+      0x79d0..0x7a20     6   0  w=0.00  can be skipped: forward branch at 0x79c0 (@!P0 BRA) and 2 outer
+      0x7a30..0x7a40     2   0  w=0.00  can be skipped: forward branch at 0x7a20 (BRA) and 2 outer
+      0x7a50..0x7a90     5   0  w=0.00  can be skipped: forward branch at 0x75f0 (@P0 BRA) and 1 outer
+      0x7aa0..0x7af0     6   0  w=0.00  can be skipped: forward branch at 0x7a90 (@!P0 BRA) and 2 outer
+      0x7b00..0x7b10     2   0  w=0.00  can be skipped: forward branch at 0x7af0 (BRA) and 2 outer
+      0x7b20..0x7bc0    11   0  w=0.00  can be skipped: forward branch at 0x75f0 (@P0 BRA) and 1 outer
+      0x7bd0..0x7cd0    17   0  w=1  can be skipped: forward branch at 0x75b0 (@!P1 BRA)
+      0x7ce0..0x8390   108  16  w=1
+      (+ 4 blocks shorter than 12 instructions with weight 1, 17 instructions in total, not listed)
+    class                                                            static  weighted   opcodes
+    tensor-core (IMMA/HMMA ...)                                         128       128   IMMA.16832.S8.S8:128
+    shared-memory load (LDS, LDSM)                                       68        68   LDSM.16.M88.4:32 LDS.128:32 LDS:4
+    global/generic load (LDG, LD)                                         4         4   LDG.E.CONSTANT:4
+    constant-bank load (LDC, LDCU)                                      114      1.42   LDC:66 LDC.64:48
+    shift / bit-field (SHF SHL SHR BMSK LOP LOP3 SGXT ...)               59      3.21   LOP3.LUT:42 SHF.R.S32.HI:9 SHF.L.U64.HI:8
+    IMAD by 2^n immediate, IMAD.SHL (= shift[+add])                      59     11.18   IMAD.WIDE:24 IMAD.SHL.U32:18 IMAD:9 IMAD.WIDE.U32:8
+    integer multiply 32 bit (IMAD IMUL, non 2^n)                         88      0.33   IMAD:56 IMAD.HI.U32:32
+    integer multiply 32x32->64 (+64-bit add) (IMAD.WIDE)                 52     36.06   IMAD.WIDE:52
+    64-bit add (IADD.64, carry forms .X)                                 36     20.06   IADD.64:32 LEA.HI.X:4
+    32-bit add / LEA (IADD IADD3 LEA)                                   206     38.62   IADD:168 IABS:32 LEA:4 UIADD3:1 ULEA:1
+    move / clear (MOV UMOV CS2R R2UR)                                    45      7.14   MOV:44 UMOV:1
+    compare / select / predicate (ISETP SEL PLOP3 ...)                  197     69.47   ISETP.NE.AND:75 ISETP.GE.AND:40 SEL:30 ISETP.GT.U32.AND:16 ISETP.GE.U32.AND:16 VIMNMX.S32:12 ISETP.NE.OR:8
+    floating point (FMUL FADD FFMA F2I I2F MUFU ...)                     56      8.18   I2F.RP:16 MUFU.RCP:16 F2I.FTZ.U32.TRUNC.NTZ:16 FMUL:4 F2I.NTZ:4
+    branch / call / exit (BRA CALL RET EXIT BSSY BSYNC)                  44     12.12   BRA:44
+    barrier / async copy (BAR LDGSTS LDGDEPBAR DEPBAR ...)               48        48   LDGSTS.E.BYPASS.128:24 DEPBAR.LE:8 BAR.SYNC.DEFER_BLOCKING:8 LDGDEPBAR:8
+    padding (NOP, never-true predicate)                                  39        39   LDS:24 UIADD3:15
+    everything else                                                       1         1   S2UR:1
+    TOTAL                                                              1244    495.78
+    predicated instructions in the loop (counted as 1 each): 205
+    stack loads/stores via R1 in the loop: 0
+    distinct general registers referenced in the loop: 120 (highest R181)
+
+$ sass_count.py <unit>.analysed.sass --elf <unit>.nvinfo.txt --brief 12   with <unit> = q35_g6 -f mt_predecode2_kernelILi6E --range 0x0450:0x2000
+==============================================================================================================
+function: _ZN4yskn20mt_predecode2_kernelILi6EEEvNS_9TensorDevEP5uint4
+  instructions (static, whole function): 528   code bytes: 0x2100
+  highest general register that appears: R47
+  stack loads/stores via R1 in the whole function: 0
+  .nv.info: register count 50, frame size 0x0, min stack size 0x0
+  loops (back edges), [start, back-branch], instructions, tensor-core instructions:
+    [0x01a0, 0x0220]      9 insns    0 mma  0 nested loop(s)
+    [0x02e0, 0x0440]     23 insns    0 mma  0 nested loop(s)
+--------------------------------------------------------------------------------------------------------------
+  RANGE (given with --range, not a detected loop) [0x0450, 0x2000]: 444 instructions per thread (static), 0 tensor-core instruction(s), nested loops: none
+    first: 0x0450  BSYNC.RECONVERGENT B0
+    last:  0x2000  RET.REL.NODEC R2 0x0
+    basic blocks (start..end, instructions, mma, weight, remark):
+      0x0450..0x0540    16   0  w=1
+      0x0550..0x1ed0   409   0  w=1
+      0x1ee0..0x2000    19   0  w=1
+    class                                                            static  weighted   opcodes
+    shared-memory load (LDS, LDSM)                                       96        96   LDS.U16:64 LDS:32
+    shared-memory store (STS)                                            32        32   STS:32
+    global/generic load (LDG, LD)                                         3         3   LDG.E.128.CONSTANT:3
+    global/generic store (STG, ST)                                        8         8   STG.E.128:8
+    constant-bank load (LDC, LDCU)                                        2         2   LDCU.64:2
+    shift / bit-field (SHF SHL SHR BMSK LOP LOP3 SGXT ...)              165       165   LOP3.LUT:85 SHF.R.U32.HI:64 SHF.L.W.U32.HI:10 SHF.R.S32.HI:5 USHF.L.U32:1
+    IMAD by 2^n immediate, IMAD.SHL (= shift[+add])                      48        48   IMAD:32 IMAD.SHL.U32:16
+    integer multiply 32 bit (IMAD IMUL, non 2^n)                          9         9   IMAD:7 IMAD.HI.U32:2
+    integer multiply 32x32->64 (+64-bit add) (IMAD.WIDE)                  4         4   IMAD.WIDE:3 IMAD.WIDE.U32:1
+    64-bit add (IADD.64, carry forms .X)                                  4         4   IADD.64:3 LEA.HI.X:1
+    32-bit add / LEA (IADD IADD3 LEA)                                    33        33   IADD:13 LEA:11 LEA.HI:3 IABS:3 ULEA:2 UIADD3:1
+    move / clear (MOV UMOV CS2R R2UR)                                     6         6   MOV:5 UMOV:1
+    compare / select / predicate (ISETP SEL PLOP3 ...)                   12        12   ISETP.GE.AND:2 SEL:2 FSEL:2 ISETP.GT.U32.AND:1 ISETP.GE.U32.AND:1 ISETP.NE.AND:1 FSETP.GEU.AND:1 FSETP.GT.AND:1
+    floating point (FMUL FADD FFMA F2I I2F MUFU ...)                     13        13   HFMA2:3 MUFU.RCP:2 FMUL:2 I2F.RP:1 F2I.FTZ.U32.TRUNC.NTZ:1 I2F.U16:1 I2FP.F32.U32.RZ:1 FMUL.RZ:1
+    warp shuffle / vote (SHFL VOTE)                                       1         1   SHFL.IDX:1
+    branch / call / exit (BRA CALL RET EXIT BSSY BSYNC)                   4         4   EXIT:2 BSYNC.RECONVERGENT:1 RET.REL.NODEC:1
+    barrier / async copy (BAR LDGSTS LDGDEPBAR DEPBAR ...)                1         1   BAR.SYNC.DEFER_BLOCKING:1
+    padding (NOP, never-true predicate)                                   1         1   NOP:1
+    everything else                                                       2         2   S2UR:2
+    TOTAL                                                               444       444
+    predicated instructions in the loop (counted as 1 each): 7
+    stack loads/stores via R1 in the loop: 0
+    distinct general registers referenced in the loop: 47 (highest R47)
+
+$ sass_count.py <unit>.analysed.sass --elf <unit>.nvinfo.txt --brief 12   with <unit> = gemm_compressed -f gemm_kernelILi6ELb1E --weight 0x7b80-0x8260=0.5
+==============================================================================================================
+function: _ZN4yskn11gemm_kernelILi6ELb1EEEvNS_10GemmLaunchE
+  instructions (static, whole function): 2344   code bytes: 0x9280
+  highest general register that appears: R124
+  stack loads/stores via R1 in the whole function: 0
+  .nv.info: register count 127, frame size 0x0, min stack size 0x0
+  loops (back edges), [start, back-branch], instructions, tensor-core instructions:
+    [0x02f0, 0x0470]     25 insns    0 mma  0 nested loop(s)
+    [0x05a0, 0x0b30]     90 insns    0 mma  0 nested loop(s)
+    [0x0e00, 0x1250]     70 insns    0 mma  0 nested loop(s)
+    [0x16a0, 0x1750]     12 insns    0 mma  0 nested loop(s)
+    [0x1b20, 0x1d80]     39 insns    0 mma  0 nested loop(s)
+    [0x23a0, 0x2600]     39 insns    0 mma  0 nested loop(s)
+    [0x2c20, 0x2e80]     39 insns    0 mma  0 nested loop(s)
+    [0x3490, 0x36f0]     39 insns    0 mma  0 nested loop(s)
+    [0x3d80, 0x3fe0]     39 insns    0 mma  0 nested loop(s)
+    [0x4320, 0x43c0]     11 insns    0 mma  0 nested loop(s)
+    [0x46f0, 0x8ac0]   1086 insns   32 mma  8 nested loop(s)
+    [0x4780, 0x4800]      9 insns    0 mma  0 nested loop(s)
+    [0x4930, 0x49d0]     11 insns    0 mma  0 nested loop(s)
+    [0x4a90, 0x4c70]     31 insns    0 mma  0 nested loop(s)
+    [0x4dc0, 0x82b0]    848 insns   32 mma  4 nested loop(s)
+    [0x4f00, 0x4fb0]     12 insns    0 mma  0 nested loop(s)
+    [0x5060, 0x51d0]     24 insns    0 mma  0 nested loop(s)
+    [0x5290, 0x5460]     30 insns    0 mma  0 nested loop(s)
+    [0x55c0, 0x5670]     12 insns    0 mma  0 nested loop(s)
+--------------------------------------------------------------------------------------------------------------
+  LOOP [0x4dc0, 0x82b0]: 848 instructions per thread (static), 32 tensor-core instruction(s), nested loops: [0x4f00,0x4fb0] [0x5060,0x51d0] [0x5290,0x5460] [0x55c0,0x5670]
+    first: 0x4dc0  MOV R46, R21
+    last:  0x82b0  @P1 BRA 0x4dc0
+    basic blocks (start..end, instructions, mma, weight, remark):
+      0x50c0..0x51a0    15   0  w=1  can be skipped: forward branch at 0x50b0 (@P0 BRA) and 1 outer; inside nested loop
+      0x5290..0x5460    30   0  w=1  can be skipped: forward branch at 0x5210 (@P0 BRA) and 1 outer; inside nested loop
+      0x5780..0x7b70   576  32  w=1  can be skipped: forward branch at 0x5770 (@P0 BRA)
+      0x7b80..0x7d20    27   0  w=0.50  can be skipped: forward branch at 0x7b70 (@!P1 BRA) and 1 outer
+      0x7d30..0x7da0     8   0  w=0.50  can be skipped: forward branch at 0x7d20 (@P1 BRA) and 2 outer
+      0x7db0..0x7dd0     3   0  w=0.50  can be skipped: forward branch at 0x7b70 (@!P1 BRA) and 1 outer
+      0x7de0..0x7e50     8   0  w=0.50  can be skipped: forward branch at 0x7dd0 (@P5 BRA) and 2 outer
+      0x7e60..0x7e80     3   0  w=0.50  can be skipped: forward branch at 0x7b70 (@!P1 BRA) and 1 outer
+      0x7e90..0x7f00     8   0  w=0.50  can be skipped: forward branch at 0x7e80 (@P2 BRA) and 2 outer
+      0x7f10..0x7f30     3   0  w=0.50  can be skipped: forward branch at 0x7b70 (@!P1 BRA) and 1 outer
+      0x7f40..0x7fb0     8   0  w=0.50  can be skipped: forward branch at 0x7f30 (@P6 BRA) and 2 outer
+      0x7fc0..0x7fe0     3   0  w=0.50  can be skipped: forward branch at 0x7b70 (@!P1 BRA) and 1 outer
+      0x7ff0..0x8060     8   0  w=0.50  can be skipped: forward branch at 0x7fe0 (@P1 BRA) and 2 outer
+      0x8070..0x8090     3   0  w=0.50  can be skipped: forward branch at 0x7b70 (@!P1 BRA) and 1 outer
+      0x80a0..0x8110     8   0  w=0.50  can be skipped: forward branch at 0x8090 (@P5 BRA) and 2 outer
+      0x8120..0x8140     3   0  w=0.50  can be skipped: forward branch at 0x7b70 (@!P1 BRA) and 1 outer
+      0x8150..0x81c0     8   0  w=0.50  can be skipped: forward branch at 0x8140 (@P2 BRA) and 2 outer
+      0x81d0..0x81e0     2   0  w=0.50  can be skipped: forward branch at 0x7b70 (@!P1 BRA) and 1 outer
+      0x81f0..0x8260     8   0  w=0.50  can be skipped: forward branch at 0x81e0 (@P6 BRA) and 2 outer
+      (+ 30 blocks shorter than 12 instructions with weight 1, 116 instructions in total, not listed)
+    class                                                            static  weighted   opcodes
+    tensor-core (IMMA/HMMA ...)                                          32        32   IMMA.16832.S8.S8:32
+    shared-memory load (LDS, LDSM)                                      112       112   LDS.U16:64 LDS.64:32 LDS:16
+    global/generic load (LDG, LD)                                        18        10   LDG.E:16 LDG.E.S8:2
+    constant-bank load (LDC, LDCU)                                       15        14   LDCU:7 LDCU.64:4 LDC.64:2 LDC:2
+    shift / bit-field (SHF SHL SHR BMSK LOP LOP3 SGXT ...)              214       213   LOP3.LUT:134 SHF.R.U32.HI:45 SHF.R.W.U32:34 SHF.R.S32.HI:1
+    IMAD by 2^n immediate, IMAD.SHL (= shift[+add])                     132       132   IMAD:105 IMAD.SHL.U32:25 IMAD.WIDE.U32:2
+    integer multiply 32 bit (IMAD IMUL, non 2^n)                         16        14   IMAD:15 IMAD.HI.U32:1
+    integer multiply 32x32->64 (+64-bit add) (IMAD.WIDE)                 22        12   IMAD.WIDE:16 IMAD.WIDE.U32:6
+    64-bit add (IADD.64, carry forms .X)                                  8         6   LEA.HI.X:5 IADD.64:3
+    32-bit add / LEA (IADD IADD3 LEA)                                    25        23   IADD:14 LEA:8 UIADD3:2 ULEA:1
+    move / clear (MOV UMOV CS2R R2UR)                                   124    123.50   MOV:113 CS2R:8 UMOV:3
+    compare / select / predicate (ISETP SEL PLOP3 ...)                   27        25   ISETP.GE.AND:9 ISETP.NE.AND:8 ISETP.NE.S64.AND:2 UISETP.GE.AND:2 ISETP.GE.U32.AND:2 ISETP.GT.U32.AND:2 VIMNMX.U32:1 VIMNMX.S32:1
+    floating point (FMUL FADD FFMA F2I I2F MUFU ...)                     32        16   FMUL:16 F2I.NTZ:16
+    branch / call / exit (BRA CALL RET EXIT BSSY BSYNC)                  50        39   BRA:28 BSSY.RECONVERGENT:10 BSYNC.RECONVERGENT:10 BRA.U:2
+    barrier / async copy (BAR LDGSTS LDGDEPBAR DEPBAR ...)                9         9   LDGSTS.E.BYPASS.128:2 DEPBAR.LE:2 BAR.SYNC.DEFER_BLOCKING:2 WARPSYNC.ALL:2 LDGDEPBAR:1
+    padding (NOP, never-true predicate)                                   8         8   LDS:6 UIADD3:2
+    everything else                                                       4         4   S2R:2 PRMT:1 S2UR:1
+    TOTAL                                                               848    792.50
+    predicated instructions in the loop (counted as 1 each): 39
+    stack loads/stores via R1 in the loop: 0
+    distinct general registers referenced in the loop: 93 (highest R124)
+
+$ sass_count.py <unit>.analysed.sass --elf <unit>.nvinfo.txt --brief 12   with <unit> = gemm_compressed -f gemm_kernelILi8ELb1E --weight 0x7bb0-0x8290=0.5
+==============================================================================================================
+function: _ZN4yskn11gemm_kernelILi8ELb1EEEvNS_10GemmLaunchE
+  instructions (static, whole function): 2344   code bytes: 0x9280
+  highest general register that appears: R125
+  stack loads/stores via R1 in the whole function: 0
+  .nv.info: register count 128, frame size 0x0, min stack size 0x0
+  loops (back edges), [start, back-branch], instructions, tensor-core instructions:
+    [0x0300, 0x0480]     25 insns    0 mma  0 nested loop(s)
+    [0x05b0, 0x0b40]     90 insns    0 mma  0 nested loop(s)
+    [0x0dd0, 0x1220]     70 insns    0 mma  0 nested loop(s)
+    [0x1670, 0x1720]     12 insns    0 mma  0 nested loop(s)
+    [0x1ac0, 0x1d20]     39 insns    0 mma  0 nested loop(s)
+    [0x2350, 0x25b0]     39 insns    0 mma  0 nested loop(s)
+    [0x2bd0, 0x2e30]     39 insns    0 mma  0 nested loop(s)
+    [0x3440, 0x36a0]     39 insns    0 mma  0 nested loop(s)
+    [0x3d40, 0x3fa0]     39 insns    0 mma  0 nested loop(s)
+    [0x42e0, 0x4380]     11 insns    0 mma  0 nested loop(s)
+    [0x46a0, 0x8b00]   1095 insns   32 mma  8 nested loop(s)
+    [0x4720, 0x47a0]      9 insns    0 mma  0 nested loop(s)
+    [0x48d0, 0x4970]     11 insns    0 mma  0 nested loop(s)
+    [0x4a40, 0x4b90]     22 insns    0 mma  0 nested loop(s)
+    [0x4ce0, 0x82f0]    866 insns   32 mma  4 nested loop(s)
+    [0x4e30, 0x4ee0]     12 insns    0 mma  0 nested loop(s)
+    [0x4f90, 0x5100]     24 insns    0 mma  0 nested loop(s)
+    [0x51d0, 0x5320]     22 insns    0 mma  0 nested loop(s)
+    [0x5480, 0x5530]     12 insns    0 mma  0 nested loop(s)
+--------------------------------------------------------------------------------------------------------------
+  LOOP [0x4ce0, 0x82f0]: 866 instructions per thread (static), 32 tensor-core instruction(s), nested loops: [0x4e30,0x4ee0] [0x4f90,0x5100] [0x51d0,0x5320] [0x5480,0x5530]
+    first: 0x4ce0  MOV R26, R22
+    last:  0x82f0  @P1 BRA 0x4ce0
+    basic blocks (start..end, instructions, mma, weight, remark):
+      0x4ff0..0x50d0    15   0  w=1  can be skipped: forward branch at 0x4fe0 (@P0 BRA) and 1 outer; inside nested loop
+      0x51d0..0x5320    22   0  w=1  can be skipped: forward branch at 0x5140 (@P0 BRA) and 1 outer; inside nested loop
+      0x5640..0x7ba0   599  32  w=1  can be skipped: forward branch at 0x5630 (@P0 BRA)
+      0x7bb0..0x7d50    27   0  w=0.50  can be skipped: forward branch at 0x7ba0 (@!P1 BRA) and 1 outer
+      0x7d60..0x7dd0     8   0  w=0.50  can be skipped: forward branch at 0x7d50 (@P1 BRA) and 2 outer
+      0x7de0..0x7e00     3   0  w=0.50  can be skipped: forward branch at 0x7ba0 (@!P1 BRA) and 1 outer
+      0x7e10..0x7e80     8   0  w=0.50  can be skipped: forward branch at 0x7e00 (@P5 BRA) and 2 outer
+      0x7e90..0x7eb0     3   0  w=0.50  can be skipped: forward branch at 0x7ba0 (@!P1 BRA) and 1 outer
+      0x7ec0..0x7f30     8   0  w=0.50  can be skipped: forward branch at 0x7eb0 (@P2 BRA) and 2 outer
+      0x7f40..0x7f60     3   0  w=0.50  can be skipped: forward branch at 0x7ba0 (@!P1 BRA) and 1 outer
+      0x7f70..0x7fe0     8   0  w=0.50  can be skipped: forward branch at 0x7f60 (@P6 BRA) and 2 outer
+      0x7ff0..0x8010     3   0  w=0.50  can be skipped: forward branch at 0x7ba0 (@!P1 BRA) and 1 outer
+      0x8020..0x8090     8   0  w=0.50  can be skipped: forward branch at 0x8010 (@P1 BRA) and 2 outer
+      0x80a0..0x80c0     3   0  w=0.50  can be skipped: forward branch at 0x7ba0 (@!P1 BRA) and 1 outer
+      0x80d0..0x8140     8   0  w=0.50  can be skipped: forward branch at 0x80c0 (@P5 BRA) and 2 outer
+      0x8150..0x8170     3   0  w=0.50  can be skipped: forward branch at 0x7ba0 (@!P1 BRA) and 1 outer
+      0x8180..0x81f0     8   0  w=0.50  can be skipped: forward branch at 0x8170 (@P2 BRA) and 2 outer
+      0x8200..0x8210     2   0  w=0.50  can be skipped: forward branch at 0x7ba0 (@!P1 BRA) and 1 outer
+      0x8220..0x8290     8   0  w=0.50  can be skipped: forward branch at 0x8210 (@P6 BRA) and 2 outer
+      (+ 30 blocks shorter than 12 instructions with weight 1, 119 instructions in total, not listed)
+    class                                                            static  weighted   opcodes
+    tensor-core (IMMA/HMMA ...)                                          32        32   IMMA.16832.S8.S8:32
+    shared-memory load (LDS, LDSM)                                      116       116   LDS.U16:64 LDS.64:32 LDS:20
+    global/generic load (LDG, LD)                                        18        10   LDG.E:16 LDG.E.S8:2
+    constant-bank load (LDC, LDCU)                                       15        14   LDCU:6 LDCU.64:4 LDC:3 LDC.64:2
+    shift / bit-field (SHF SHL SHR BMSK LOP LOP3 SGXT ...)              213       212   LOP3.LUT:139 SHF.R.U32.HI:39 SHF.R.W.U32:34 SHF.R.S32.HI:1
+    IMAD by 2^n immediate, IMAD.SHL (= shift[+add])                     147       147   IMAD:107 IMAD.SHL.U32:38 IMAD.WIDE.U32:2
+    integer multiply 32 bit (IMAD IMUL, non 2^n)                         12        10   IMAD:12
+    integer multiply 32x32->64 (+64-bit add) (IMAD.WIDE)                 21        11   IMAD.WIDE:16 IMAD.WIDE.U32:5
+    64-bit add (IADD.64, carry forms .X)                                  9         7   LEA.HI.X:5 IADD.64:4
+    32-bit add / LEA (IADD IADD3 LEA)                                    20        18   IADD:9 LEA:7 UIADD3:2 ULEA:1 IADD3:1
+    move / clear (MOV UMOV CS2R R2UR)                                   135    134.50   MOV:123 CS2R:9 UMOV:3
+    compare / select / predicate (ISETP SEL PLOP3 ...)                   25        23   ISETP.GE.AND:9 ISETP.NE.AND:8 ISETP.NE.S64.AND:2 UISETP.GE.AND:2 ISETP.GE.U32.AND:2 ISETP.GT.U32.AND:1 VIMNMX.S32:1
+    floating point (FMUL FADD FFMA F2I I2F MUFU ...)                     32        16   FMUL:16 F2I.NTZ:16
+    branch / call / exit (BRA CALL RET EXIT BSSY BSYNC)                  50        39   BRA:28 BSSY.RECONVERGENT:10 BSYNC.RECONVERGENT:10 BRA.U:2
+    barrier / async copy (BAR LDGSTS LDGDEPBAR DEPBAR ...)                9         9   LDGSTS.E.BYPASS.128:2 DEPBAR.LE:2 BAR.SYNC.DEFER_BLOCKING:2 WARPSYNC.ALL:2 LDGDEPBAR:1
+    padding (NOP, never-true predicate)                                   8         8   LDS:6 UIADD3:2
+    everything else                                                       4         4   S2R:2 PRMT:1 S2UR:1
+    TOTAL                                                               866    810.50
+    predicated instructions in the loop (counted as 1 each): 37
+    stack loads/stores via R1 in the loop: 0
+    distinct general registers referenced in the loop: 95 (highest R125)

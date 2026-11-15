@@ -240,30 +240,41 @@ inline void k_conv(sycl::queue& q, int M, const uint16_t* mixed, const float* cw
 // Threads >= 384 (only when committing) roll the conv history: 20 blocks of 512 columns.
 inline void k_state(sycl::queue& q, int M, int n_commit, const float* Q, const float* K, const float* V, const float* B, const float* Gg, float* Sp, float* Ss, float* core,
                     const uint16_t* mixed, float* hist) {
-  q.parallel_for(sycl::range<1>(384 + (n_commit > 0 ? 20 : 0)), [=](sycl::id<1> it) SYCL_ESIMD_KERNEL {
-    if (it[0] >= 384) { const int c0 = ((int)it[0] - 384) * 512;
+  // The recurrence is serial in the rows, so its latency per row is what counts.  A (head, 16 state columns) block is shared by a
+  // work-group of 2 threads; each keeps 64 of the 128 state rows in REGISTERS (no memory traffic for the state) and the two exchange
+  // their partial sums through SLM with two barriers per row.  Row t: s *= e^g, kv = sum_i s_i k_i, d = (v - kv) * beta, s += k d,
+  // o = sum_i s_i q_i -- per element the same operations in the same order as before (4 partial sums of 32 rows, ((p0+p1)+p2)+p3).
+  // The state after row n_commit - 1 is written back to Sp; later rows (look-ahead) only change the registers.  Ss is no longer used.
+  (void)Ss;
+  if (n_commit > 0) q.parallel_for(sycl::range<1>(20), [=](sycl::id<1> it) SYCL_ESIMD_KERNEL { const int c0 = (int)it[0] * 512;       // conv history: the last 3 committed rows
       unroll<32>([&](auto ri) { constexpr int r16 = decltype(ri)::value * 16; vf nw[3];
         unroll<3>([&](auto ki) { constexpr int k = decltype(ki)::value; const int r = n_commit - 3 + k;
           if (r >= 0) nw[k] = v_bf2f(block_load<uint16_t, 16>(mixed + (size_t)r * CV + c0 + r16)); else nw[k] = block_load<float, 16>(hist + (size_t)(3 + r) * CV + c0 + r16); });
-        unroll<3>([&](auto ki) { constexpr int k = decltype(ki)::value; block_store<float, 16>(hist + (size_t)k * CV + c0 + r16, nw[k]); }); });
-      return; }
-    const int hd = it[0] >> 3, j0 = (it[0] & 7) * 16, kh = hd / 3; const size_t so = (size_t)hd * 16384 + j0;
-    for (int t = 0; t < M; ++t) { const float* kt = K + (size_t)t * 2048 + kh * 128; const float* qt = Q + (size_t)t * 2048 + kh * 128;
-      const float* rd = (t <= n_commit ? Sp : Ss) + so; float* wr = (t < n_commit ? Sp : Ss) + so;
-      const vf eg = v_expf(vf(Gg[t * 48 + hd])); vf kv[4], o[4];
-      unroll<4>([&](auto wi) { constexpr int w = decltype(wi)::value; vf a = 0.f;
-        unroll<2>([&](auto hi) { constexpr int hh = decltype(hi)::value; const vf kk = block_load<float, 16>(kt + 32 * w + 16 * hh);
-          unroll<16>([&](auto li) { constexpr int l = decltype(li)::value; constexpr int i = 32 * w + 16 * hh + l;
-            const vf s = block_load<float, 16>(rd + i * 128) * eg; const float k1 = kk[l]; a = a + s * k1; }); });
-        kv[w] = a; });
-      const vf d = (block_load<float, 16>(V + (size_t)t * ZN + hd * 128 + j0) - (((kv[0] + kv[1]) + kv[2]) + kv[3])) * B[t * 48 + hd];
-      unroll<4>([&](auto wi) { constexpr int w = decltype(wi)::value; vf a = 0.f;
-        unroll<2>([&](auto hi) { constexpr int hh = decltype(hi)::value; const vf kk = block_load<float, 16>(kt + 32 * w + 16 * hh), qq = block_load<float, 16>(qt + 32 * w + 16 * hh);
-          unroll<16>([&](auto li) { constexpr int l = decltype(li)::value; constexpr int i = 32 * w + 16 * hh + l;
-            vf s = block_load<float, 16>(rd + i * 128) * eg; const float k1 = kk[l], q1 = qq[l]; s = s + k1 * d; a = a + s * q1;
-            block_store<float, 16>(wr + i * 128, s); }); });
-        o[w] = a; });
-      block_store<float, 16>(core + (size_t)t * ZN + hd * 128 + j0, v_rbf(((o[0] + o[1]) + o[2]) + o[3])); } });
+        unroll<3>([&](auto ki) { constexpr int k = decltype(ki)::value; block_store<float, 16>(hist + (size_t)k * CV + c0 + r16, nw[k]); }); }); });
+  q.parallel_for(sycl::nd_range<1>(768, 2), [=](sycl::nd_item<1> ndi) SYCL_ESIMD_KERNEL {
+    slm_init<512>();
+    const int sub = (int)ndi.get_local_id(0), blk = (int)ndi.get_group(0), hd = blk >> 3, j0 = (blk & 7) * 16, kh = hd / 3, i0 = 64 * sub;
+    const size_t so = (size_t)hd * 16384 + j0;
+    vf s[64]; unroll<64>([&](auto ii) { constexpr int i = decltype(ii)::value; s[i] = block_load<float, 16>(Sp + so + (size_t)(i0 + i) * 128); });
+    for (int t = 0; t < M; ++t) { const float* kt = K + (size_t)t * 2048 + kh * 128 + i0; const float* qt = Q + (size_t)t * 2048 + kh * 128 + i0;
+      const vf eg = v_expf(vf(Gg[t * 48 + hd])); vf kk[4], a[2];
+      unroll<4>([&](auto xi) { constexpr int x = decltype(xi)::value; kk[x] = block_load<float, 16>(kt + 16 * x); });
+      unroll<2>([&](auto wi) { constexpr int w = decltype(wi)::value; vf acc = 0.f;
+        unroll<32>([&](auto li) { constexpr int i = 32 * w + decltype(li)::value; s[i] = s[i] * eg; const float k1 = kk[i / 16][i % 16]; acc = acc + s[i] * k1; });
+        a[w] = acc; });
+      slm_block_store<float, 16>(sub * 128, a[0]); slm_block_store<float, 16>(sub * 128 + 64, a[1]);
+      barrier();
+      const vf kv0 = slm_block_load<float, 16>(0), kv1 = slm_block_load<float, 16>(64), kv2 = slm_block_load<float, 16>(128), kv3 = slm_block_load<float, 16>(192);
+      const vf d = (block_load<float, 16>(V + (size_t)t * ZN + hd * 128 + j0) - (((kv0 + kv1) + kv2) + kv3)) * B[t * 48 + hd];
+      vf qq[4]; unroll<4>([&](auto xi) { constexpr int x = decltype(xi)::value; qq[x] = block_load<float, 16>(qt + 16 * x); });
+      unroll<2>([&](auto wi) { constexpr int w = decltype(wi)::value; vf acc = 0.f;
+        unroll<32>([&](auto li) { constexpr int i = 32 * w + decltype(li)::value; const float k1 = kk[i / 16][i % 16], q1 = qq[i / 16][i % 16]; s[i] = s[i] + k1 * d; acc = acc + s[i] * q1; });
+        a[w] = acc; });
+      slm_block_store<float, 16>(256 + sub * 128, a[0]); slm_block_store<float, 16>(256 + sub * 128 + 64, a[1]);
+      barrier();
+      if (sub == 0) { const vf o0 = slm_block_load<float, 16>(256), o1 = slm_block_load<float, 16>(320), o2 = slm_block_load<float, 16>(384), o3 = slm_block_load<float, 16>(448);
+        block_store<float, 16>(core + (size_t)t * ZN + hd * 128 + j0, v_rbf(((o0 + o1) + o2) + o3)); }
+      if (t + 1 == n_commit) unroll<64>([&](auto ii) { constexpr int i = decltype(ii)::value; block_store<float, 16>(Sp + so + (size_t)(i0 + i) * 128, s[i]); }); } });
 }
 // per-head RMS norm of core, gate with silu(z), quantised input of out_proj (+ its scales)
 inline void k_gdn_out(sycl::queue& q, int M, int MR, const float* core, const float* z, const float* gw, const float* si, float eps, float* alpha, int8_t* qx, float* us, int32_t* Aw) {

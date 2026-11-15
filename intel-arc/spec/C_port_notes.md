@@ -10,7 +10,7 @@ E.res_norm(&A.o, M, ln2, gate.sg_in, false);
 ```
 * In: `E.qx / E.alpha / E.S` (and `E.us/E.Aw` when `E.aw_ready`) from the preceding `res_norm`. Out: `A.o.part`, `E.us`.
 * `q.part = E.part`, `k.part = E.part + 16*12288`, `v.part = k.part + 16*1024`, `o.part = E.part` (q/k/v are consumed before o).
-* The KV profile is read from `$YX_KV_PROFILE`, default `models/speed/kvq_u5.bin` (`attn_default_profile`).
+* The KV profile is read from `$YX_KV_PROFILE`, then `$YSKN_TB_PROFILE`, else `kvq_u5.bin` next to the model file (`attn_default_profile`).
 * Rows of a rejected pass need no undo: the next pass overwrites their slots (spec C 5.4). Tree passes (`wk` depth table)
   are NOT implemented: depth = row index only.
 * `E.fast` (default) runs the ESIMD kernels (`namespace yx::ak`), `YX_SCALAR=1` the scalar kernels kept in

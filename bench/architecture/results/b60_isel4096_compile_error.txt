@@ -1,0 +1,13 @@
+# IGC error output for the kernel k_isel<4096> (simd<uint16_t, 4096>::iselect, a table of 8 KiB = the whole register file)
+Instruction / Operand / Region Errors:
+
+/-------------------------------------------!!!KERNEL HEADER ERRORS FOUND!!!-------------------------------------------\
+Error in CISA routine with name: _ZTSN4sycl3_V16detail18RoundedRangeKernelINS0_4itemILi1ELb1EEELi1EZ6k_iselILi4096EENS0_5eventERNS0_5queueEPKtPjiiEUlNS0_2idILi1EEEE_EE
+                  Error Message: V566 (size = 8192 bytes) is indirectly addressed and spans complete GRF file of 8192 GRFs. This cannot be allocated by RA.
+\----------------------------------------------------------------------------------------------------------------------/
+
+
+/-------------------------------------------!!!KERNEL HEADER ERRORS FOUND!!!-------------------------------------------\
+Error in CISA routine with name: _ZTSN4sycl3_V16detail18RoundedRangeKernelINS0_4itemILi1ELb1EEELi1EZ6k_iselILi4096EENS0_5eventERNS0_5queueEPKtPjiiEUlNS0_2idILi1EEEE_EE
+                  Error Message: V1239 (size = 8192 bytes) is indirectly addressed and spans complete GRF file of 8192 GRFs. This cannot be allocated by RA.
+\----------------------------------------------------------------------------------------------------------------------/

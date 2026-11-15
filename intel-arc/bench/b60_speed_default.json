@@ -2,7 +2,7 @@
  "version": "0.1.1",
  "model": "qwen3.8-27b",
  "gpu": [
-  "NVIDIA GeForce RTX 5060 Ti, 16311 MiB, 15844 MiB, 595.99.02"
+  "NVIDIA GeForce RTX 5060 Ti, 16311 MiB, 15840 MiB, 595.99.02"
  ],
  "tokens_per_test": 512,
  "runs": [
@@ -11,8 +11,8 @@
    "run": 1,
    "prompt_tokens": 30,
    "tokens": 512,
-   "seconds": 9.065,
-   "tokens_per_s": 56.5,
+   "seconds": 8.306,
+   "tokens_per_s": 61.6,
    "tokens_per_pass": 4.16
   },
   {
@@ -20,8 +20,8 @@
    "run": 2,
    "prompt_tokens": 30,
    "tokens": 512,
-   "seconds": 9.065,
-   "tokens_per_s": 56.5,
+   "seconds": 8.305,
+   "tokens_per_s": 61.6,
    "tokens_per_pass": 4.16
   },
   {
@@ -29,8 +29,8 @@
    "run": 1,
    "prompt_tokens": 28,
    "tokens": 512,
-   "seconds": 6.008,
-   "tokens_per_s": 85.2,
+   "seconds": 5.414,
+   "tokens_per_s": 94.6,
    "tokens_per_pass": 6.56
   },
   {
@@ -38,8 +38,8 @@
    "run": 2,
    "prompt_tokens": 28,
    "tokens": 512,
-   "seconds": 6.007,
-   "tokens_per_s": 85.2,
+   "seconds": 5.414,
+   "tokens_per_s": 94.6,
    "tokens_per_pass": 6.56
   },
   {
@@ -47,8 +47,8 @@
    "run": 1,
    "prompt_tokens": 29,
    "tokens": 512,
-   "seconds": 14.091,
-   "tokens_per_s": 36.3,
+   "seconds": 12.97,
+   "tokens_per_s": 39.5,
    "tokens_per_pass": 2.65
   },
   {
@@ -56,8 +56,8 @@
    "run": 2,
    "prompt_tokens": 29,
    "tokens": 512,
-   "seconds": 14.088,
-   "tokens_per_s": 36.3,
+   "seconds": 12.97,
+   "tokens_per_s": 39.5,
    "tokens_per_pass": 2.65
   },
   {
@@ -65,8 +65,8 @@
    "run": 1,
    "prompt_tokens": 24,
    "tokens": 512,
-   "seconds": 6.178,
-   "tokens_per_s": 82.9,
+   "seconds": 5.588,
+   "tokens_per_s": 91.6,
    "tokens_per_pass": 6.32
   },
   {
@@ -74,10 +74,10 @@
    "run": 2,
    "prompt_tokens": 24,
    "tokens": 512,
-   "seconds": 6.178,
-   "tokens_per_s": 82.9,
+   "seconds": 5.589,
+   "tokens_per_s": 91.6,
    "tokens_per_pass": 6.32
   }
  ],
- "mean_tokens_per_s": 65.2
+ "mean_tokens_per_s": 71.8
 }

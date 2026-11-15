@@ -1,0 +1,161 @@
+# Loop bodies (IGC assembly, comments and scheduling annotations removed) of selected arith / lut / xmx kernels; scripts/igc_loop_body.py
+== ZTSZ4k_esIl6MulXorLi1EEN4sycl3_V15eventERNS2_5queueEPfiiT_S7_S7_EUlNS2_2idILi1EEEE_.asm self-loop blocks: [('B004', 51)]
+    mov (16|M0) r9.0<1>:d r35.0<2;1,0>:d
+    mul (16|M0) acc0.0<1>:ud r9.0<1;1,0>:ud r8.0<2;1,0>:uw
+    mach (16|M0) r11.0<1>:ud r9.0<1;1,0>:ud r8.0<1;1,0>:ud
+    mov (16|M0) r10.0<1>:ud acc0.0<1;1,0>:ud
+    (W) mul (16|M0) acc0.0<1>:d r35.0<2;1,0>:d r2.14<0;1,0>:uw
+    macl (16|M0) r12.0<1>:d r35.0<2;1,0>:d r2.7<0;1,0>:d
+    (W) mul (16|M0) acc0.0<1>:d r35.1<2;1,0>:d r2.12<0;1,0>:uw
+    macl (16|M0) r13.0<1>:d r35.1<2;1,0>:d r2.6<0;1,0>:d
+    add3 (16|M0) r39.0<1>:d r13.0<1;0>:d r11.0<1;0>:d r12.0<1>:d
+    mov (16|M0) r14.0<2>:d r10.0<1;1,0>:d
+    mov (16|M0) r14.1<2>:d r39.0<1;1,0>:d
+    xor (32|M0) r14.0<1>:d r14.0<1;1,0>:d r6.0<1;1,0>:d
+    mov (16|M0) r16.0<1>:d r14.0<2;1,0>:d
+    mul (16|M0) acc0.0<1>:ud r16.0<1;1,0>:ud r8.0<2;1,0>:uw
+    mach (16|M0) r19.0<1>:ud r16.0<1;1,0>:ud r8.0<1;1,0>:ud
+    mov (16|M0) r18.0<1>:ud acc0.0<1;1,0>:ud
+    (W) mul (16|M0) acc0.0<1>:d r14.0<2;1,0>:d r2.14<0;1,0>:uw
+    macl (16|M0) r20.0<1>:d r14.0<2;1,0>:d r2.7<0;1,0>:d
+    (W) mul (16|M0) acc0.0<1>:d r14.1<2;1,0>:d r2.12<0;1,0>:uw
+    macl (16|M0) r17.0<1>:d r14.1<2;1,0>:d r2.6<0;1,0>:d
+    add3 (16|M0) r40.0<1>:d r17.0<1;0>:d r19.0<1;0>:d r20.0<1>:d
+    mov (16|M0) r21.0<2>:d r18.0<1;1,0>:d
+    mov (16|M0) r21.1<2>:d r40.0<1;1,0>:d
+    xor (32|M0) r21.0<1>:d r21.0<1;1,0>:d r6.0<1;1,0>:d
+    mov (16|M0) r23.0<1>:d r21.0<2;1,0>:d
+    mul (16|M0) acc0.0<1>:ud r23.0<1;1,0>:ud r8.0<2;1,0>:uw
+    mach (16|M0) r25.0<1>:ud r23.0<1;1,0>:ud r8.0<1;1,0>:ud
+    mov (16|M0) r24.0<1>:ud acc0.0<1;1,0>:ud
+    (W) mul (16|M0) acc0.0<1>:d r21.0<2;1,0>:d r2.14<0;1,0>:uw
+    macl (16|M0) r26.0<1>:d r21.0<2;1,0>:d r2.7<0;1,0>:d
+    (W) mul (16|M0) acc0.0<1>:d r21.1<2;1,0>:d r2.12<0;1,0>:uw
+    macl (16|M0) r27.0<1>:d r21.1<2;1,0>:d r2.6<0;1,0>:d
+    add3 (16|M0) r41.0<1>:d r27.0<1;0>:d r25.0<1;0>:d r26.0<1>:d
+    mov (16|M0) r28.0<2>:d r24.0<1;1,0>:d
+    mov (16|M0) r28.1<2>:d r41.0<1;1,0>:d
+    xor (32|M0) r28.0<1>:d r28.0<1;1,0>:d r6.0<1;1,0>:d
+    mov (16|M0) r30.0<1>:d r28.0<2;1,0>:d
+    mul (16|M0) acc0.0<1>:ud r30.0<1;1,0>:ud r8.0<2;1,0>:uw
+    mach (16|M0) r33.0<1>:ud r30.0<1;1,0>:ud r8.0<1;1,0>:ud
+    mov (16|M0) r32.0<1>:ud acc0.0<1;1,0>:ud
+    (W) mul (16|M0) acc0.0<1>:d r28.0<2;1,0>:d r2.14<0;1,0>:uw
+    macl (16|M0) r34.0<1>:d r28.0<2;1,0>:d r2.7<0;1,0>:d
+    (W) mul (16|M0) acc0.0<1>:d r28.1<2;1,0>:d r2.12<0;1,0>:uw
+    macl (16|M0) r31.0<1>:d r28.1<2;1,0>:d r2.6<0;1,0>:d
+    add3 (16|M0) r42.0<1>:d r31.0<1;0>:d r33.0<1;0>:d r34.0<1>:d
+    add (1|M0) r1.2<1>:d r1.2<0;1,0>:d 1:w
+    mov (16|M0) r35.0<2>:d r32.0<1;1,0>:d
+    mov (16|M0) r35.1<2>:d r42.0<1;1,0>:d
+    cmp (1|M0) (eq)f0.0 null<1>:d r1.2<0;1,0>:d r2.12<0;1,0>:d
+    xor (32|M0) r35.0<1>:d r35.0<1;1,0>:d r6.0<1;1,0>:d
+    (W&~f0.0) jmpi BB_2
+== ZTSZ6k_wideILi0EEN4sycl3_V15eventERNS1_5queueEPfiiiEUlNS1_2idILi1EEEE_.asm self-loop blocks: [('B005', 31)]
+    mul (16|M0) acc0.0<1>:d r7.0<1;1,0>:d r6.0<2;1,0>:uw
+    xor (16|M0) r20.0<1>:d r7.0<1;1,0>:d 85:w
+    mach (16|M0) r17.0<1>:d r7.0<1;1,0>:d r6.0<1;1,0>:d
+    mov (16|M0) r16.0<1>:d acc0.0<1;1,0>:d
+    mul (16|M0) acc0.0<1>:d r20.0<1;1,0>:d r6.0<2;1,0>:uw
+    xor (16|M0) r25.0<1>:d r7.0<1;1,0>:d 170:w
+    mach (16|M0) r22.0<1>:d r20.0<1;1,0>:d r6.0<1;1,0>:d
+    mov (16|M0) r21.0<1>:d acc0.0<1;1,0>:d
+    mul (16|M0) acc0.0<1>:d r25.0<1;1,0>:d r6.0<2;1,0>:uw
+    xor (16|M0) r30.0<1>:d r7.0<1;1,0>:d 255:w
+    mach (16|M0) r27.0<1>:d r25.0<1;1,0>:d r6.0<1;1,0>:d
+    mov (16|M0) r26.0<1>:d acc0.0<1;1,0>:d
+    mul (16|M0) acc0.0<1>:d r30.0<1;1,0>:d r6.0<2;1,0>:uw
+    mach (16|M0) r32.0<1>:d r30.0<1;1,0>:d r6.0<1;1,0>:d
+    add (1|M0) r1.2<1>:d r1.2<0;1,0>:d 1:w
+    mov (16|M0) r31.0<1>:d acc0.0<1;1,0>:d
+    cmp (1|M0) (eq)f0.0 null<1>:d r1.2<0;1,0>:d r2.6<0;1,0>:d
+    mov (16|M0) r18.0<2>:d r16.0<1;1,0>:d
+    mov (16|M0) r23.0<2>:d r21.0<1;1,0>:d
+    mov (16|M0) r28.0<2>:d r26.0<1;1,0>:d
+    mov (16|M0) r33.0<2>:d r31.0<1;1,0>:d
+    mov (16|M0) r18.1<2>:d r17.0<1;1,0>:d
+    mov (16|M0) r23.1<2>:d r22.0<1;1,0>:d
+    mov (16|M0) r28.1<2>:d r27.0<1;1,0>:d
+    mov (16|M0) r33.1<2>:d r32.0<1;1,0>:d
+    add (16|M0) r7.0<1>:d r7.0<1;1,0>:d 1:w
+    add (16|M0) r14.0<1>:q r18.0<1;1,0>:q r14.0<1;1,0>:q
+    add (16|M0) r12.0<1>:q r23.0<1;1,0>:q r12.0<1;1,0>:q
+    add (16|M0) r10.0<1>:q r28.0<1;1,0>:q r10.0<1;1,0>:q
+    add (16|M0) r8.0<1>:q r33.0<1;1,0>:q r8.0<1;1,0>:q
+    (W&~f0.0) jmpi BB_3
+== ZTSZ4k_esIf6MulAddLi1EEN4sycl3_V15eventERNS2_5queueEPfiiT_S7_S7_EUlNS2_2idILi1EEEE_.asm self-loop blocks: [('B004', 11)]
+    mul (16|M0) r7.0<1>:f r2.6<0;1,0>:f r7.0<1;1,0>:f
+    add (16|M0) r7.0<1>:f r2.7<0;1,0>:f r7.0<1;1,0>:f
+    mul (16|M0) r7.0<1>:f r2.6<0;1,0>:f r7.0<1;1,0>:f
+    add (16|M0) r7.0<1>:f r2.7<0;1,0>:f r7.0<1;1,0>:f
+    mul (16|M0) r7.0<1>:f r2.6<0;1,0>:f r7.0<1;1,0>:f
+    add (1|M0) r1.2<1>:d r1.2<0;1,0>:d 1:w
+    add (16|M0) r7.0<1>:f r2.7<0;1,0>:f r7.0<1;1,0>:f
+    cmp (1|M0) (eq)f0.0 null<1>:d r1.2<0;1,0>:d r2.9<0;1,0>:d
+    mul (16|M0) r7.0<1>:f r2.6<0;1,0>:f r7.0<1;1,0>:f
+    add (16|M0) r7.0<1>:f r2.7<0;1,0>:f r7.0<1;1,0>:f
+    (W&~f0.0) jmpi BB_2
+== ZTSZ4k_esIf3DivLi1EEN4sycl3_V15eventERNS2_5queueEPfiiT_S7_S7_EUlNS2_2idILi1EEEE_.asm self-loop blocks: [('B004', 11)]
+    math.inv (16|M0) r8.0<1>:f r7.0<1;1,0>:f
+    mul (16|M0) r7.0<1>:f r2.6<0;1,0>:f r8.0<1;1,0>:f
+    math.inv (16|M0) r9.0<1>:f r7.0<1;1,0>:f
+    mul (16|M0) r7.0<1>:f r2.6<0;1,0>:f r9.0<1;1,0>:f
+    math.inv (16|M0) r10.0<1>:f r7.0<1;1,0>:f
+    mul (16|M0) r7.0<1>:f r2.6<0;1,0>:f r10.0<1;1,0>:f
+    math.inv (16|M0) r11.0<1>:f r7.0<1;1,0>:f
+    add (1|M0) r1.2<1>:d r1.2<0;1,0>:d 1:w
+    mul (16|M0) r7.0<1>:f r2.6<0;1,0>:f r11.0<1;1,0>:f
+    cmp (1|M0) (eq)f0.0 null<1>:d r1.2<0;1,0>:d r2.9<0;1,0>:d
+    (W&~f0.0) jmpi BB_2
+== ZTSZ4k_esIf4SqrtLi1EEN4sycl3_V15eventERNS2_5queueEPfiiT_S7_S7_EUlNS2_2idILi1EEEE_.asm self-loop blocks: [('B004', 7)]
+    math.sqt (16|M0) r7.0<1>:f r7.0<1;1,0>:f
+    add (1|M0) r1.2<1>:d r1.2<0;1,0>:d 1:w
+    math.sqt (16|M0) r7.0<1>:f r7.0<1;1,0>:f
+    cmp (1|M0) (eq)f0.0 null<1>:d r1.2<0;1,0>:d r2.9<0;1,0>:d
+    math.sqt (16|M0) r7.0<1>:f r7.0<1;1,0>:f
+    math.sqt (16|M0) r7.0<1>:f r7.0<1;1,0>:f
+    (W&~f0.0) jmpi BB_2
+== ZTSZ4k_esIl6AddXorLi1EEN4sycl3_V15eventERNS2_5queueEPfiiT_S7_S7_EUlNS2_2idILi1EEEE_.asm self-loop blocks: [('B004', 11)]
+    add (16|M0) r8.0<1>:q r8.0<1;1,0>:q r2.4<0;1,0>:q
+    xor (32|M0) r8.0<1>:d r8.0<1;1,0>:d r6.0<1;1,0>:d
+    add (16|M0) r8.0<1>:q r8.0<1;1,0>:q r2.4<0;1,0>:q
+    xor (32|M0) r8.0<1>:d r8.0<1;1,0>:d r6.0<1;1,0>:d
+    add (16|M0) r8.0<1>:q r8.0<1;1,0>:q r2.4<0;1,0>:q
+    xor (32|M0) r8.0<1>:d r8.0<1;1,0>:d r6.0<1;1,0>:d
+    add (1|M0) r1.2<1>:d r1.2<0;1,0>:d 1:w
+    add (16|M0) r8.0<1>:q r8.0<1;1,0>:q r2.4<0;1,0>:q
+    cmp (1|M0) (eq)f0.0 null<1>:d r1.2<0;1,0>:d r2.12<0;1,0>:d
+    xor (32|M0) r8.0<1>:d r8.0<1;1,0>:d r6.0<1;1,0>:d
+    (W&~f0.0) jmpi BB_2
+== ZTSZ4k_esId6MulAddLi1EEN4sycl3_V15eventERNS2_5queueEPfiiT_S7_S7_EUlNS2_2idILi1EEEE_.asm self-loop blocks: [('B004', 11)]
+    mul (16|M0) r6.0<1>:df r2.3<0;1,0>:df r6.0<1;1,0>:df
+    add (16|M0) r6.0<1>:df r2.4<0;1,0>:df r6.0<1;1,0>:df
+    mul (16|M0) r6.0<1>:df r2.3<0;1,0>:df r6.0<1;1,0>:df
+    add (16|M0) r6.0<1>:df r2.4<0;1,0>:df r6.0<1;1,0>:df
+    mul (16|M0) r6.0<1>:df r2.3<0;1,0>:df r6.0<1;1,0>:df
+    add (1|M0) r1.2<1>:d r1.2<0;1,0>:d 1:w
+    add (16|M0) r6.0<1>:df r2.4<0;1,0>:df r6.0<1;1,0>:df
+    cmp (1|M0) (eq)f0.0 null<1>:d r1.2<0;1,0>:d r2.12<0;1,0>:d
+    mul (16|M0) r6.0<1>:df r2.3<0;1,0>:df r6.0<1;1,0>:df
+    add (16|M0) r6.0<1>:df r2.4<0;1,0>:df r6.0<1;1,0>:df
+    (W&~f0.0) jmpi BB_2
+== ZTSZ6k_iselILi256EEN4sycl3_V15eventERNS1_5queueEPKtPjiiEUlNS1_2idILi1EEEE_.asm self-loop blocks: [('B004', 12)]
+    (W) mul (16|M0) acc0.0<1>:d r95.0<1;1,0>:d 0x660D:uw
+    macl (16|M0) r95.0<1>:d r95.0<1;1,0>:d 1664525:d
+    add (16|M0) r95.0<1>:d r95.0<1;1,0>:d 1013904223:d
+    shl (16|M0) r100.0<2>:w r95.0<2;1,0>:w 1:w
+    mov (16|M0) r101.0<1>:w r100.0<2;1,0>:w
+    mov (16|M0) r1.6<1>:w r101.0<1;1,0>:w
+    and (16|M0) r94.2<1>:w r1.6<1;1,0>:w 510:w
+    add (1|M0) r1.2<1>:d r1.2<0;1,0>:d 1:w
+    add (16|M0) a0.0<1>:uw r94.2<1;1,0>:uw 0x1580:uw
+    cmp (1|M0) (eq)f0.0 null<1>:d r1.2<0;1,0>:d r2.8<0;1,0>:d
+    add (16|M0) r96.0<1>:d r[a0.0]<1,0>:uw r96.0<1;1,0>:d
+    (W&~f0.0) jmpi BB_2
+== ZTSZ5k_regILi8ELi1ELb0EEN4sycl3_V15eventERNS1_5queueEPKiPfiiEUlNS1_2idILi1EEEE_.asm self-loop blocks: [('B004', 5)]
+    add (1|M0) r1.2<1>:d r1.2<0;1,0>:d 1:w
+    sync.allwr ($3,$4)
+    dpas.8x8 (16|M0) r20:d r20:d r7:b r15.0:b
+    cmp (1|M0) (eq)f0.0 null<1>:d r1.2<0;1,0>:d r2.8<0;1,0>:d
+    (W&~f0.0) jmpi BB_2
+== ZTSZ5k_regILi1ELi4ELb0EEN4sycl3_V15eventERNS1_5queueEPKiPfiiEUlNS1_2idILi1EEEE_.asm self-loop blocks: []

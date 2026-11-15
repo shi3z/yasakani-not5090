@@ -24,21 +24,20 @@ The 5060 Ti runs the CUDA engine with the fastest model (the quality model does 
 
 | | 5060 Ti, fastest | B60, fastest | B60, quality |
 |---|---|---|---|
-| thinking off | 149.1 | 65.2 | 62.9 |
-| thinking on | 123.6 | 57.9 | 56.8 |
+| thinking off | 149.1 | 71.8 | 69.2 |
+| thinking on | 123.6 | 63.8 | 62.4 |
 
 Long prompts (generation, tokens per second / prompt read, tokens per second):
 
 | prompt tokens | 5060 Ti, fastest | B60, fastest | B60, quality |
 |---|---|---|---|
-| 8000 | 99.1 / 792 | 44.1 / 201 | 44.3 / 193 |
-| 30000 | 96.1 / 720 | 36.2 / 179 | 35.8 / 180 |
-| 60000 | 76.5 / 643 | 30.3 / 161 | 25.9 / 157 |
+| 8000 | 99.1 / 792 | 48.8 / 551 | 49.0 / 482 |
+| 30000 | 96.1 / 720 | 38.5 / 489 | 38.1 / 434 |
+| 60000 | 76.5 / 643 | 34.6 / 423 | 29.5 / 381 |
 
-The B60 is a little under half as fast as the 5060 Ti when it generates, and a quarter as fast when it reads a prompt
-(16 rows per pass here, up to 512 in the CUDA engine). The attention layers keep decoded copies of the keys and values
-in VRAM (4.3 GB at 65,536 tokens); before that, generation after a 60,000-token prompt ran at 9.9 tokens per second.
-Raw outputs are in `bench/`; the per-prompt tables are in the README of the repository.
+Prompts are read in batches (256 rows for the fastest model, 128 for the quality model, chosen from the free VRAM at start;
+`YX_PF_BATCH` overrides it, `YX_MEM=1` prints the allocations). The engine state after a prompt does not depend on the batch.
+`PORT_NOTES.md` has the measurements behind these numbers and the approaches that did not work; raw outputs are in `bench/`.
 
 ## Layout
 

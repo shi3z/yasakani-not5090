@@ -11,8 +11,8 @@ struct Head {
   Tensor T; float* fnorm = nullptr; float* logits = nullptr; float* bv = nullptr; int* bi = nullptr;
   static constexpr int CH = 1024, NCH = (VOC + CH - 1) / CH;
   void init(Engine& E) {
-    T = upload(E.q, E.C, "lm_head"); T.part = E.dev<int64_t>((size_t)MRMAX * VOC);
-    fnorm = upload_vec(E.q, E.C, "norm", H); logits = E.dev<float>((size_t)MRMAX * VOC); bv = E.dev<float>(MRMAX * NCH); bi = E.dev<int>(MRMAX * NCH);
+    T = upload(E.q, E.C, "lm_head"); T.part = E.dev<int64_t>((size_t)E.cap * VOC);
+    fnorm = upload_vec(E.q, E.C, "norm", H); logits = E.dev<float>((size_t)E.cap * VOC); bv = E.dev<float>(E.cap * NCH); bi = E.dev<int>(E.cap * NCH);
   }
   // logits of rows [row0, row0 + rows) of the pass (the last res_norm must have used fnorm and T.sg_in); arg-max per row into out
   void run(Engine& E, int M, int row0, int rows, int* out) {
@@ -23,7 +23,7 @@ struct Head {
       const int v1 = (c + 1) * CH < VOC ? (c + 1) * CH : VOC;
       for (int v = c * CH; v < v1; ++v) { const float x = (((float)acc[(size_t)row * VOC + v] * u) * r) * tau[v]; lg[(size_t)row * VOC + v] = x; if (x > best) { best = x; bidx = v; } }
       pv[row * NCH + c] = best; pi[row * NCH + c] = bidx; });
-    std::vector<float> hv((size_t)MRMAX * NCH); std::vector<int> hi((size_t)MRMAX * NCH);
+    std::vector<float> hv((size_t)E.cap * NCH); std::vector<int> hi((size_t)E.cap * NCH);
     E.q.memcpy(hv.data() + row0 * NCH, bv + row0 * NCH, (size_t)rows * NCH * 4); E.q.memcpy(hi.data() + row0 * NCH, bi + row0 * NCH, (size_t)rows * NCH * 4).wait();
     for (int r = 0; r < rows; ++r) { float best = -3.4028234663852886e38f; int b = 0x7fffffff;
       for (int c = 0; c < NCH; ++c) { const float x = hv[(row0 + r) * NCH + c]; if (x > best) { best = x; b = hi[(row0 + r) * NCH + c]; } }   // chunks ascend: first maximum = smallest id

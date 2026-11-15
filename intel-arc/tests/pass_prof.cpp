@@ -23,13 +23,15 @@ int main(int argc, char** argv) {
       else { tm("gdn (48 layers)", [&] { E.gdn(Y.g, M, commit ? M : 0); }); tm("res_norm x128", [&] { E.res_norm(&Y.g.out, M, Y.ln2, Y.m.gate.sg_in, false); }); }
       tm("mlp (64 layers)", [&] { E.mlp(Y.m, M); });
       tm("res_norm x128", [&] { if (l + 1 < NL) E.res_norm(&Y.m.down, M, E.L[l + 1].ln1, sg, !E.L[l + 1].full); else E.res_norm(&Y.m.down, M, hd.fnorm, hd.T.sg_in, false); }); } };
-  std::vector<int> ids(16); int am[16];
-  for (; pos + 16 <= ctx; pos += 16) { for (int i = 0; i < 16; ++i) ids[i] = base[(pos + i) % 12]; E.q.memcpy(E.ids, ids.data(), 64).wait(); pass(16, true); }
+  std::vector<int> ids(512); int am[16];
+  { const int B = E.cap; for (; pos + B <= ctx; pos += B) { for (int i = 0; i < B; ++i) ids[i] = base[(pos + i) % 12]; E.q.memcpy(E.ids, ids.data(), B * 4).wait(); pass(B, true); } }     // context with the prefill batch
   E.q.wait(); std::printf("context %d\n", pos);
-  for (int M : {1, 8, 16}) { for (int i = 0; i < M; ++i) ids[i] = base[i % 12]; E.q.memcpy(E.ids, ids.data(), M * 4).wait();
+  for (int M : {1, 8, 16, 32, 64, 128, 256, 512}) { if (M > E.cap) break; for (int i = 0; i < M; ++i) ids[i] = base[i % 12]; E.q.memcpy(E.ids, ids.data(), M * 4).wait();
     double best = 1e9, bh = 1e9;
-    for (int r = 0; r < 6; ++r) { double t0 = now(); pass(M, false); E.q.wait(); double t1 = now(); hd.run(E, M, 0, M, am); double t2 = now(); best = std::min(best, t1 - t0); bh = std::min(bh, t2 - t1); }
+    for (int r = 0; r < 6; ++r) { double t0 = now(); pass(M, false); E.q.wait(); double t1 = now(); if (M <= 16) hd.run(E, M, 0, M, am); double t2 = now(); best = std::min(best, t1 - t0); bh = std::min(bh, t2 - t1); }
     prof = true; T.clear(); pass(M, false); prof = false;
+    if (getenv("YX_FINE")) { E.prof = true; E.T.clear(); E.mark(nullptr); const double f0 = now(); pass(M, false); E.q.wait(); const double f1 = now(); E.prof = false;
+      std::printf("  fine profile M=%d (pass with waits %.1f ms):\n", M, f1 - f0); for (auto& kv : E.T) std::printf("    %-28s %8.2f ms  %5.1f%%\n", kv.first.c_str(), kv.second, 100 * kv.second / (f1 - f0)); }
     std::printf("M=%2d: pass %.1f ms + head (all rows, arg-max) %.2f ms;  breakdown with waits:", M, best, bh);
     double s = 0; for (auto& kv : T) { std::printf("  %s %.1f", kv.first.c_str(), kv.second); s += kv.second; } std::printf("  (sum %.1f)\n", s); }
 }

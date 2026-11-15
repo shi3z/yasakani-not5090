@@ -18,11 +18,21 @@ double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::
 struct yskn_engine {
   yx::Engine E; yx::Head hd; std::vector<std::unique_ptr<yx::Attn>> A; int max_ctx; int pos = 0; std::vector<int> hist;   // hist = committed tokens (positions 0..pos-1)
   yx::SmpParams smp; std::atomic<int> cancel{0}; std::vector<float> lg; yx::Draft dr;     // dr: the draft model (off until yskn_load_bdraft)
-  yskn_engine(const char* path, int mc) : E(path, yx::NL), max_ctx((mc + 63) / 64 * 64), lg(yx::VOC) {
-    hd.init(E);
+  // device memory by purpose (bytes), for YX_MEM=1 and yskn_last_error-free diagnostics
+  size_t mem_model = 0, mem_head = 0, mem_attn = 0, mem_draft = 0;
+  static inline const int sysman_env = (setenv("ZES_ENABLE_SYSMAN", "1", 0), 0);      // before Level Zero starts: lets the driver report the free device memory
+  void mem_report(const char* when) { if (!getenv("YX_MEM")) return; const double G = 1073741824.0;
+    size_t tot = 0, fre = 0; try { auto d = E.q.get_device(); tot = d.get_info<sycl::info::device::global_mem_size>(); if (d.has(sycl::aspect::ext_intel_free_memory)) fre = d.get_info<sycl::ext::intel::info::device::free_memory>(); } catch (...) {}
+    fprintf(stderr, "[xe mem] %s: batch %d, context %d | weights + engine scratch %.2f GB, head %.2f, attention (KV cache, mirrors, batch buffers) %.2f, draft model %.2f | allocated %.2f of %.2f GB, driver reports %.2f GB free | batch estimate %.2f GB against %.2f GB free at start\n",
+            when, E.cap, max_ctx, mem_model / G, mem_head / G, mem_attn / G, mem_draft / G, yx::g_dev_bytes / G, tot / G, fre / G, E.mem_need / G, E.mem_avail / G); }
+  size_t own0 = 0, own1 = 0;      // this engine's range of yx::g_dev_ptrs (one engine per process at a time)
+  yskn_engine(const char* path, int mc, int cap) : E(path, yx::NL, cap), max_ctx((mc + 63) / 64 * 64), lg(yx::VOC) {
+    const size_t b0 = yx::g_dev_bytes; (void)b0;
+    mem_model = yx::g_dev_bytes; hd.init(E); mem_head = yx::g_dev_bytes - mem_model;
     for (int l = 3; l < yx::NL; l += 4) A.emplace_back(std::make_unique<yx::Attn>(E, l, max_ctx));
-    E.q.wait();
+    E.q.wait(); mem_attn = yx::g_dev_bytes - mem_model - mem_head;
   }
+  ~yskn_engine() { try { E.q.wait(); } catch (...) {} yx::dev_release(own0); yx::g_dev_bytes = 0; }
   void reset() { E.q.wait(); pos = 0; hist.clear(); dr.reset();
     for (auto& Y : E.L) if (!Y.full && Y.g.S) { E.q.memset(Y.g.S, 0, 48 * 128 * 128 * 4); E.q.memset(Y.g.hist, 0, 3 * yx::CV * 4); }
     E.q.wait(); }
@@ -36,7 +46,8 @@ struct yskn_engine {
       E.mlp(Y.m, M);
       if (l + 1 < NL) E.res_norm(&Y.m.down, M, E.L[l + 1].ln1, sg, !E.L[l + 1].full);
       else E.res_norm(&Y.m.down, M, hd.fnorm, hd.T.sg_in, false);
-      if (dr.on && l % 14 == 5) E.q.memcpy(dr.cap + (size_t)(l / 14) * MRMAX * H, E.h, (size_t)M * H * 4); }      // drafter features: h after layers 5, 19, 33, 47, 61
+      if (dr.on && l % 14 == 5) { if (M <= MRMAX) E.q.memcpy(dr.cap + (size_t)(l / 14) * MRMAX * H, E.h, (size_t)M * H * 4);
+        else { if (!pfcap) pfcap = E.dev<float>((size_t)5 * E.cap * H); E.q.memcpy(pfcap + (size_t)(l / 14) * E.cap * H, E.h, (size_t)M * H * 4); } } }      // drafter features: h after layers 5, 19, 33, 47, 61
   }
   // token predicted by row `row` of the last pass, which sits at absolute position p (the new token goes to p + 1)
   int pick(int M, int row, int p) { int t; hd.run(E, M, row, 1, &t); if (!smp.on) return t; hd.read_logits(E, row, lg.data()); return yx::Head::sample(lg.data(), smp, (int64_t)p + 1); }
@@ -49,14 +60,33 @@ struct yskn_engine {
         fprintf(f, "%d %d %.9g %d %.9g\n", p0 + r + 1, i1, v1, i2, v2); }
       fclose(f); }
     if (smp.on) for (int r = 0; r < M; ++r) { hd.read_logits(E, r, lg.data()); am[r] = yx::Head::sample(lg.data(), smp, (int64_t)p0 + r + 1); } }
+  // big batch: move the head inputs (qx, Aw, us, S) of row `row` of an M-row pass to row 0 of a 1-row layout, so that the head runs on one row
+  float* pfcap = nullptr; int8_t* rq = nullptr; float* rf = nullptr; int32_t* ra = nullptr;
+  void row_to_front(int M, int row) {
+    using namespace yx; if (!rq) { rq = E.dev<int8_t>(H); rf = E.dev<float>(1 + SST); ra = E.dev<int32_t>(10); }
+    const int MR = Engine::mr_of(M); int8_t *qx = E.qx, *q1 = rq; float *us = E.us, *S = E.S, *f1 = rf; int32_t *Aw = E.Aw, *a1 = ra;
+    E.q.parallel_for(sycl::range<1>(160), [=](sycl::id<1> it) { const int c = it[0]; for (int b = 0; b < 32; ++b) q1[c * 32 + b] = qx[((size_t)c * MR + row) * 32 + b];
+      if (c == 0) { f1[0] = us[row]; for (int k = 0; k < SST; ++k) f1[1 + k] = S[row * SST + k]; for (int g = 0; g < 10; ++g) a1[g] = Aw[row * 10 + g]; } });
+    E.q.parallel_for(sycl::range<1>(160), [=](sycl::id<1> it) { const int c = it[0]; for (int b = 0; b < 32; ++b) qx[c * 32 + b] = q1[c * 32 + b];
+      if (c == 0) { us[0] = f1[0]; for (int k = 0; k < SST; ++k) S[k] = f1[1 + k]; for (int g = 0; g < 10; ++g) Aw[g] = a1[g]; } });
+    E.aw_ready = true;
+  }
   // append tokens (committing); returns the token predicted after the last one.  am (optional): the choice after every row.
   int feed(const int* ids, int n, int* am = nullptr) {
     if (pos + n > max_ctx) throw std::runtime_error("prefill: context overflow"); int t = -1; int tmp[yx::MRMAX];
-    for (int i = 0; i < n; i += yx::MRMAX) { const int M = std::min(yx::MRMAX, n - i);
+    const int B = E.cap;                                                 // rows per committing pass (YX_PF_BATCH)
+    for (int i = 0; i < n; i += B) { const int M = std::min(B, n - i);
       E.q.memcpy(E.ids, ids + i, M * 4).wait(); pass(M, true);
-      if (am) { picks(M, pos, am + i); t = am[i + M - 1]; }
-      else if (i + M == n) { picks(M, pos, tmp); t = tmp[M - 1]; }       // head on all rows of the last chunk only
-      dr.ctx(M, pos);                                                     // drafter context rows of the chunk (no-op without drafter)
+      if (M <= yx::MRMAX) {
+        if (am) { picks(M, pos, am + i); t = am[i + M - 1]; }
+        else if (i + M == n) { picks(M, pos, tmp); t = tmp[M - 1]; }     // head on all rows of the last chunk only
+        dr.ctx(M, pos); }                                                 // drafter context rows of the chunk (no-op without drafter)
+      else {
+        if (dr.on) for (int j = 0; j < M; j += yx::MRMAX) { const int mj = std::min(yx::MRMAX, M - j);      // drafter context in its own 16-row chunks
+          for (int c = 0; c < 5; ++c) E.q.memcpy(dr.cap + (size_t)c * yx::MRMAX * yx::H, pfcap + ((size_t)c * E.cap + j) * yx::H, (size_t)mj * yx::H * 4);
+          dr.ctx(mj, pos + j); }
+        if (am) { picks(M, pos, am + i); t = am[i + M - 1]; }                           // look-ahead tables need the model's choice after every prompt row
+        else if (i + M == n) { row_to_front(M, M - 1); t = pick(1, 0, pos + M - 1); } }  // otherwise the head runs on the last row only
       pos += M; hist.insert(hist.end(), ids + i, ids + i + M); }
     return t;
   }
@@ -75,13 +105,48 @@ struct yskn_engine {
   }
 };
 #define YX_TRY(body) try { body; return 0; } catch (const std::exception& ex) { g_err = ex.what(); return -1; }
-YX_API yskn_engine* yskn_open(const char* path, int max_ctx, int, int) { try { return new yskn_engine(path, max_ctx); } catch (const std::exception& ex) { g_err = ex.what(); return nullptr; } }
+// Bytes that engine + head + attention allocate for a prefill batch of `cap` rows: the same constructors in counting mode (exact).
+static double dry_bytes(const char* path, int ctx, int cap) {
+  const size_t keep = yx::g_dev_bytes; yx::g_dev_bytes = 0; yx::g_dry = true; double r = 0;
+  try { yx::Engine e(path, yx::NL, cap); yx::Head h; h.init(e); std::vector<std::unique_ptr<yx::Attn>> at; for (int l = 3; l < yx::NL; l += 4) at.emplace_back(std::make_unique<yx::Attn>(e, l, ctx));      // kept alive together: the 16 layers share one set of buffers
+    r = (double)yx::g_dev_bytes; } catch (...) { r = 0; }
+  yx::g_dry = false; yx::g_dev_bytes = keep; return r;
+}
+// Prefill batch: YX_PF_BATCH if set; else the largest of 256 / 128 / 64 / 16 for which  engine(batch) + draft model + margin  fits into
+// the device memory that is free now (other processes' use is already taken off by the driver).  engine(batch) is exact and linear in
+// the batch (two counting runs); the draft model next to the model file takes 0.9 x its file sizes (measured 2.29 GB for 2.57 GB of
+// files); margin: 0.15 GB (`YX_MEM_MARGIN_GB`) for kernels and runtime (measured about 0.1 GB).
+struct BatchPlan { int cap = 16; double need = 0, avail = 0, base = 0, per_row = 0, draft = 0; };
+static BatchPlan plan_batch(const char* path, int ctx) {
+  BatchPlan P; const bool forced = getenv("YX_PF_BATCH") != nullptr;      // forced: the estimate is still made, for the report
+  double total = 0, avail = 0;
+  try { sycl::device d(sycl::gpu_selector_v); total = (double)d.get_info<sycl::info::device::global_mem_size>();
+    if (d.has(sycl::aspect::ext_intel_free_memory)) avail = (double)d.get_info<sycl::ext::intel::info::device::free_memory>(); } catch (...) {}
+  if (avail <= 0) avail = 0.93 * total;
+  const double b16 = dry_bytes(path, ctx, 16), b256 = dry_bytes(path, ctx, 256);
+  if (avail <= 0 || b16 <= 0 || b256 <= 0) { P.cap = forced ? yx::pf_batch() : 64; return P; }
+  { std::error_code ec; for (auto& f : std::filesystem::directory_iterator(std::filesystem::path(path).parent_path(), ec)) { const std::string n = f.path().filename().string();
+      if (n.rfind("bdraft", 0) == 0 && (f.path().extension() == ".yskn" || f.path().extension() == ".shead")) P.draft += 0.9 * (double)f.file_size(ec); } }
+  P.per_row = (b256 - b16) / 240.0; P.base = b16 - 16.0 * P.per_row + 0.2 * 1073741824.0; P.avail = avail;      // + 0.2 GB: the counting run comes out 0.13 GB below the real allocations (measured, all batches, both models)
+  const double margin = (getenv("YX_MEM_MARGIN_GB") ? atof(getenv("YX_MEM_MARGIN_GB")) : 0.15) * 1073741824.0;
+  for (int b : {256, 128, 64, 16}) { P.cap = b; P.need = P.base + P.per_row * b + P.draft; if (P.need + margin <= avail) break; }
+  if (forced) { P.cap = yx::pf_batch(); P.need = P.base + P.per_row * P.cap + P.draft; }
+  return P;
+}
+YX_API yskn_engine* yskn_open(const char* path, int max_ctx, int, int) {
+  try { const int ctx = (max_ctx + 63) / 64 * 64; const BatchPlan P = plan_batch(path, ctx);
+    for (int cap = P.cap;; cap = cap > 128 ? 128 : cap > 64 ? 64 : 16) {      // allocation failure: undo and retry with a smaller batch
+      const size_t mark = yx::g_dev_ptrs.size(), bytes0 = yx::g_dev_bytes;
+      try { auto* e = new yskn_engine(path, max_ctx, cap); e->own0 = mark; e->E.mem_need = P.need > 0 ? P.base + P.per_row * cap + P.draft : 0; e->E.mem_avail = P.avail; e->mem_report("open"); return e; }
+      catch (const std::exception& ex) { yx::dev_release(mark); yx::g_dev_bytes = bytes0; if (cap <= 16 || std::string(ex.what()).find("out of device memory") == std::string::npos) throw;
+        if (getenv("YX_MEM")) fprintf(stderr, "[xe mem] batch %d: %s; the partial allocations were freed, trying a smaller batch\n", cap, ex.what()); } } }
+  catch (const std::exception& ex) { g_err = ex.what(); return nullptr; } }
 YX_API void yskn_close(yskn_engine* e) { delete e; }
 YX_API int yskn_reset(yskn_engine* e) { YX_TRY(e->reset()) }
 YX_API int yskn_position(yskn_engine* e) { return e->pos; }
 YX_API const char* yskn_last_error(void) { return g_err.c_str(); }
 YX_API int yskn_cancel(yskn_engine* e) { e->cancel.store(1); return 0; }
-YX_API int yskn_load_bdraft(yskn_engine* e, const char* path) { YX_TRY(e->dr.load(e->E, path, e->max_ctx)) }
+YX_API int yskn_load_bdraft(yskn_engine* e, const char* path) { YX_TRY(const size_t b0 = yx::g_dev_bytes; e->dr.load(e->E, path, e->max_ctx); e->mem_draft = yx::g_dev_bytes - b0; e->mem_report("draft model loaded")) }
 YX_API int yskn_set_opt(yskn_engine* e, int key, int value) { YX_TRY(
   switch (key) {
     case 10: e->smp.on = value > 0; if (value > 0) e->smp.temp = value / 1000.0; break;
@@ -95,7 +160,19 @@ YX_API int yskn_prefill(yskn_engine* e, const int32_t* ids, int n, int32_t* firs
 YX_API int yskn_decode(yskn_engine*, int32_t*, int) { g_err = "decode: not implemented in the Xe port (use spec_generate)"; return -1; }
 YX_API int yskn_logits(yskn_engine* e, float* out) { YX_TRY(e->hd.read_logits(e->E, 0, out)) }
 YX_API int yskn_nll(yskn_engine*, const int32_t*, int, float*) { g_err = "nll: not implemented in the Xe port"; return -1; }
-YX_API int yskn_state_hash(yskn_engine*, uint64_t*, int, int*) { g_err = "state_hash: not implemented in the Xe port"; return -1; }
+// Hashes of the committed state (tests): [0] DeltaNet states, [1] convolution histories, [2] KV cache (codes and scales of the slots < position),
+// [3] decoded K/V mirrors of the slots < position (0 without mirrors).  count (optional) = number of hashes written.
+YX_API int yskn_state_hash(yskn_engine* e, uint64_t* out, int n, int* count) { try {
+  using namespace yx; sycl::queue& q = e->E.q; q.wait(); uint64_t hsh[4] = {1469598103934665603ull, 1469598103934665603ull, 1469598103934665603ull, 1469598103934665603ull};
+  std::vector<uint8_t> buf; auto add = [&](int k, const void* dev, size_t bytes) { if (!dev || !bytes) return; buf.resize(bytes); q.memcpy(buf.data(), dev, bytes).wait();
+    uint64_t x = hsh[k]; const uint64_t* w = (const uint64_t*)buf.data(); for (size_t i = 0; i < bytes / 8; ++i) x = (x ^ w[i]) * 1099511628211ull; for (size_t i = bytes / 8 * 8; i < bytes; ++i) x = (x ^ buf[i]) * 1099511628211ull; hsh[k] = x; };
+  for (auto& Y : e->E.L) if (!Y.full && Y.g.S) { add(0, Y.g.S, (size_t)48 * 128 * 128 * 4); add(1, Y.g.hist, (size_t)3 * CV * 4); }
+  const int pos = e->pos, mc = e->max_ctx;
+  for (auto& ap : e->A) { Attn& a = *ap; for (int h = 0; h < 4; ++h) { const size_t r0 = (size_t)h * mc;
+      add(2, a.kp + r0 * 40, (size_t)pos * 160); add(2, a.kps + r0, (size_t)pos * 4);
+      if (a.vpk) { add(2, a.vp + r0 * 40, (size_t)pos * 160); add(2, a.vps + r0, (size_t)pos * 4); } else { add(2, a.v8 + r0 * 256, (size_t)pos * 256); add(2, a.vs + r0, (size_t)pos * 4); }
+      if (a.mk && pos >= 16) { const size_t g0 = (size_t)h * a.sh->G * 4096; add(3, a.mk + g0, (size_t)(pos / 16) * 8192); add(3, a.mv + g0, (size_t)(pos / 16) * 8192); } } }
+  for (int i = 0; i < n && i < 4; ++i) out[i] = hsh[i]; if (count) *count = n < 4 ? n : 4; return 0; } catch (const std::exception& ex) { g_err = ex.what(); return -1; } }
 namespace {
 // Host draft sources of the reference engine (spec D 2.3): copy from the context (D0) and next-token tables (D1).
 struct Drafts {
