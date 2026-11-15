@@ -10,6 +10,7 @@ same memory bandwidth. The analysis is in [REPORT.md](REPORT.md); raw numbers ar
 |---|---|
 | `b60/common.hpp` | queue selection (Intel GPU), `unroll<N>`, timing (`best_time`: best of 5, queued or synchronous), `ARCH_ONLY`, `ARCH_COMPILE_ONLY` |
 | `b60/gemm_stages.cpp` | stage decomposition A..G of the compressed GEMM (read codes, extract states, table lookup, int8 operand, dpas, int64 accumulation, float scale); 3- and 4-bit codes, M = 1..64 rows, real matrix shapes; exact check against a host reference |
+| `b60/gemm_decode.cpp` | experiment: the decode GEMM (1 to 16 input rows) with code words and lookups requested ahead, and with 2 to 8 workers per output block; results in `results/b60_gemm_decode*.csv` (no variant was faster in the engine) |
 | `b60/gemm_once.cpp` | experiment: compressed GEMM that decodes the weights once per launch for 64 to 512 input rows (work-group of 16 threads per 16 output rows, decoded operands in SLM, int64 sums in registers / memory / SLM); exact |
 | `b60/lut_variants.cpp` | value-table variants: SLM gather, USM gather, 1 MiB pair table, register table (`iselect`), index patterns, 8 / 16 / 32 lanes per gather message; in a tight loop and inside the whole GEMM kernel |
 | `b60/xmx.cpp` | `dpas` latency / throughput in registers (int8 and bf16) swept over the number of threads; uncompressed int8 / bf16 GEMM |

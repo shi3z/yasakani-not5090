@@ -1,28 +1,54 @@
-retry test (no draft model, allocations fail above 19.5 GB): [xe mem] batch 256: out of device memory; the partial allocations were freed, trying a smaller batch|[xe mem] open: batch 128, context 65536 | allocated 17.55 of 23.91 GB, driver reports 4.63 GB free | batch estimate 19.91 GB against 22.43 GB free at start| -> states vs original kernels: RESULT: ALL IDENTICAL
+second round (decode speed), November 15, 2026; lines per model: memory report, self-check, state checks, yasakani bench (thinking off per task, mean off, mean on, mean with look-ahead off), long prompts (look-ahead on, then off)
 === speed model
-[xe mem] draft model loaded: batch 256, context 65536 | allocated 22.16 of 23.91 GB, driver reports 0.17 GB free | batch estimate 22.23 GB against 22.43 GB free at start
+[xe mem] draft model loaded: batch 256, context 65536 | weights + engine scratch 9.51 GB, head 1.30, attention (KV cache, mirrors, batch buffers) 9.09, draft model 2.29 | allocated 22.19 of 23.91 GB, driver reports 0.14 GB free | batch estimate 22.26 GB against 22.43 GB free at start
   short-answer   PASS  (3 tokens)
   thinking       PASS  (160 tokens)
   plain-text     PASS  (32 tokens)
 state check speed: batch 16 vs auto: RESULT: ALL IDENTICAL
+state check speed: auto vs pushed build (auto): RESULT: ALL IDENTICAL
 state check speed: auto vs original 16-row kernels: RESULT: ALL IDENTICAL
+decode check speed: new build vs pushed build (ids, positions, state hashes; greedy + sampling + prefix reuse): RESULT: ALL IDENTICAL
+decode check speed: look-ahead on vs off: RESULT: ALL IDENTICAL
 RESULT: PASS
+explain      run 2  prompt    30  generated   512     64.4 tokens/s  4.30 tokens/pass
+code         run 2  prompt    28  generated   512    114.3 tokens/s  8.26 tokens/pass
+story        run 2  prompt    29  generated   512     40.5 tokens/s  2.64 tokens/pass
+proof        run 2  prompt    24  generated   512    114.9 tokens/s  8.13 tokens/pass
+mean over 8 run(s): 83.5 tokens/s   (greedy, thinking off, 512 tokens each)
+mean over 8 run(s): 66.5 tokens/s   (greedy, thinking on, 512 tokens each)
+mean over 4 run(s): 18.6 tokens/s   (greedy, thinking off, 128 tokens each)
     prompt    prefill s  prefill t/s    gen t/s   ms/pass  tok/pass  peak MiB
-      8000        14.51          551       48.8     70.67      3.45  15840
-     30000        61.39          489       38.5     80.77      3.11  15840
-     60000       141.73          423       34.6     94.51      3.27  15840
-mean over 4 run(s): 71.8 tokens/s   (greedy, thinking off, 512 tokens each)
+      8000        14.47          553       49.3     69.91      3.45  15840
+     30000        61.24          490       39.3     79.04      3.11  15840
+     60000       141.46          424       35.2     92.94      3.27  15840
+      8000        12.60          635       17.5     57.21      1.00  15840
+     30000        54.16          554       15.1     66.07      1.00  15840
+     60000       127.26          471       12.9     77.32      1.00  15840
 === quality model
-[xe mem] draft model loaded: batch 128, context 65536 | allocated 21.76 of 23.91 GB, driver reports 0.53 GB free | batch estimate 21.83 GB against 22.43 GB free at start
+[xe mem] draft model loaded: batch 128, context 65536 | weights + engine scratch 10.86 GB, head 0.95, attention (KV cache, mirrors, batch buffers) 7.69, draft model 2.29 | allocated 21.79 of 23.91 GB, driver reports 0.51 GB free | batch estimate 21.86 GB against 22.43 GB free at start
   short-answer   PASS  (3 tokens)
   thinking       FAIL  the output differs
   plain-text     PASS  (32 tokens)
 self-check FAILED for 1 case(s).
 state check quality: batch 16 vs auto: RESULT: ALL IDENTICAL
+state check quality: auto vs pushed build (auto): RESULT: ALL IDENTICAL
+decode check quality: new build vs pushed build (ids, positions, state hashes; greedy + sampling + prefix reuse): RESULT: ALL IDENTICAL
+decode check quality: look-ahead on vs off: RESULT: ALL IDENTICAL
 RESULT: PASS
+explain      run 2  prompt    30  generated   512     57.1 tokens/s  4.00 tokens/pass
+code         run 2  prompt    28  generated   512    115.6 tokens/s  8.68 tokens/pass
+story        run 2  prompt    29  generated   512     37.6 tokens/s  2.55 tokens/pass
+proof        run 2  prompt    24  generated   512     99.7 tokens/s  7.21 tokens/pass
+mean over 8 run(s): 77.5 tokens/s   (greedy, thinking off, 512 tokens each)
+mean over 8 run(s): 65.6 tokens/s   (greedy, thinking on, 512 tokens each)
+mean over 4 run(s): 17.7 tokens/s   (greedy, thinking off, 128 tokens each)
     prompt    prefill s  prefill t/s    gen t/s   ms/pass  tok/pass  peak MiB
-      8000        16.59          482       49.0     73.36      3.59  15840
-     30000        69.18          434       38.1     83.58      3.19  15840
-     60000       157.44          381       29.5     97.04      2.87  15840
-mean over 4 run(s): 69.3 tokens/s   (greedy, thinking off, 512 tokens each)
-speed, batch 128 forced:       8000        16.30          491       48.7     70.76      3.45  15840|     60000       155.67          385       34.6     94.49      3.27  15840|
+      8000        16.41          487       50.5     72.16      3.64  15840
+     30000        68.58          437       38.6     82.55      3.19  15840
+     60000       156.36          384       29.7     96.37      2.87  15840
+      8000        15.64          511       16.7     59.89      1.00  15840
+     30000        65.68          457       14.5     68.77      1.00  15840
+     60000       150.55          399       12.5     80.03      1.00  15840
+library built from these sources vs the build that ran the checks above (tests/dec_check.py, both models): RESULT: ALL IDENTICAL
+--- previous round (commit 7ed9c78), not repeated:
+retry test (no draft model, allocations fail above 19.5 GB): [xe mem] batch 256: out of device memory; the partial allocations were freed, trying a smaller batch|[xe mem] open: batch 128, context 65536 | allocated 17.55 of 23.91 GB, driver reports 4.63 GB free | batch estimate 19.91 GB against 22.43 GB free at start| -> states vs original kernels: RESULT: ALL IDENTICAL

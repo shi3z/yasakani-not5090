@@ -14,7 +14,8 @@ constexpr int MRMAX = 16;      // rows of a decode / verify pass
 inline int pf_batch() { static const int v = [] { const char* e = std::getenv("YX_PF_BATCH"); int b = e ? atoi(e) : 256; return b <= 16 ? 16 : b <= 64 ? 64 : b <= 128 ? 128 : 256; }(); return v; }
 constexpr int NL = 64, F = 17408, ZN = 6144, CV = 10240, VOC = 248320;
 struct Gdn { Tensor qkv, z, out; float *wa, *wb, *conv, *A_log, *dt_bias, *gnorm; float* S; float* hist;        // S [48][128][128], hist [3][10240]
-             uint16_t* mixed; float *q, *k, *v, *beta, *g; };                                                  // per-layer verify intermediates
+             uint16_t* mixed; float *q, *k, *v, *beta, *g;
+             float *q2, *k2, *v2, *beta2, *g2; };                                                              // second set (16 rows): look-ahead passes alternate, see Engine::pend_rows                                                  // per-layer verify intermediates
 struct Mlp { Tensor gate, up, down; };
 struct Layer { bool full = false; Gdn g; Mlp m; float *ln1, *ln2; };
 struct Engine {
@@ -35,6 +36,15 @@ struct Engine {
   template <class T> T* dev(size_t n) { T* p = (T*)dev_alloc(q, n * sizeof(T)); if (p) q.memset(p, 0, n * sizeof(T)); return p; }
   Tensor up(const std::string& n) { Tensor T = upload(q, C, n); T.part = part; return T; }
 
+  // Deferred state replay.  A look-ahead pass leaves the DeltaNet states untouched; the rows accepted afterwards used to be replayed by
+  // 48 launches at commit time.  Now the per-layer inputs of the recurrence (q, k, v, beta, g) of that pass stay in buffer set
+  // `pend_set`, the next pass writes the other set (`gset`), and its state kernel runs the pend_rows accepted rows first.
+  int gset = 0, pend_rows = 0, pend_set = 0;
+  fx::StateOld state_old(const Gdn& Y) const { fx::StateOld o; if (!pend_rows) return o; o.R = pend_rows;
+    if (pend_set) { o.Q = Y.q2; o.K = Y.k2; o.V = Y.v2; o.B = Y.beta2; o.G = Y.g2; } else { o.Q = Y.q; o.K = Y.k; o.V = Y.v; o.B = Y.beta; o.G = Y.g; } return o; }
+  void flush_states() { if (!pend_rows) return;      // run the pending rows now (anything but a look-ahead pass comes next)
+    for (auto& Y : L) if (!Y.full && Y.g.S) fx::k_state(q, 0, 0, nullptr, nullptr, nullptr, nullptr, nullptr, Y.g.S, Sscr, core, Y.g.mixed, Y.g.hist, state_old(Y.g));
+    pend_rows = 0; }
   double mem_need = 0, mem_avail = 0;     // set by the API: estimate for the chosen batch / free device memory at start (bytes)
   // cap_arg: rows of a prefill batch (16 / 64 / 128 / 256); 0 = YX_PF_BATCH or 256 (tests)
   explicit Engine(const std::string& path, int upto = NL, int cap_arg = 0) : q(sycl::gpu_selector_v, sycl::property::queue::in_order()) {
@@ -63,7 +73,8 @@ struct Engine {
         g.wa = upload_vec(q, C, a + "in_proj_a", 48 * H); g.wb = upload_vec(q, C, a + "in_proj_b", 48 * H); g.conv = upload_vec(q, C, a + "conv1d", CV * 4);
         g.A_log = upload_vec(q, C, a + "A_log", 48); g.dt_bias = upload_vec(q, C, a + "dt_bias", 48); g.gnorm = upload_vec(q, C, a + "norm", 128);
         g.S = dev<float>(48 * 128 * 128); g.hist = dev<float>(3 * CV); g.mixed = dev<uint16_t>((size_t)cap * CV);
-        g.q = dev<float>(cap * 2048); g.k = dev<float>(cap * 2048); g.v = dev<float>(cap * ZN); g.beta = dev<float>(cap * 48); g.g = dev<float>(cap * 48); }
+        g.q = dev<float>(cap * 2048); g.k = dev<float>(cap * 2048); g.v = dev<float>(cap * ZN); g.beta = dev<float>(cap * 48); g.g = dev<float>(cap * 48);
+        g.q2 = dev<float>(MRMAX * 2048); g.k2 = dev<float>(MRMAX * 2048); g.v2 = dev<float>(MRMAX * ZN); g.beta2 = dev<float>(MRMAX * 48); g.g2 = dev<float>(MRMAX * 48); }
       Mlp& m = Y.m; m.gate = up(p + "mlp.gate_proj"); m.up = up(p + "mlp.up_proj"); m.down = up(p + "mlp.down_proj"); m.up.part = part + (size_t)cap * F;
     }
     if (!g_dry) q.wait();
@@ -113,12 +124,19 @@ struct Engine {
 #undef YX_B
       return; }
     int W = 1; if (nt == 1 && wsplit && thr < 640) W = 2;      // the GPU runs about 640 ESIMD threads at once; 320 leave half of it idle
+    static const int w16 = getenv("YX_W16") ? atoi(getenv("YX_W16")) : 4, g16 = getenv("YX_G16") ? atoi(getenv("YX_G16")) : 0;      // tests
+    if (W == 2 && MR == 16 && T0->Kc >= 16384) W = w16;        // 16 rows, down_proj: 4 workers (measured 11.4 -> 10.2 ms per pass; slower at 8 rows)
     if (getenv("YX_W") && nt == 1 && T0->N == H) W = std::min(G, atoi(getenv("YX_W")));
     if (getenv("YX_WG") && nt > 1) W = std::min(G, atoi(getenv("YX_WG")));
     size_t poff[3] = {0, 0, 0}; if (W > 1) { size_t o = 0; for (int k = 0; k < nt; ++k) { poff[k] = o; gt[k].part = partw + o; o += (size_t)W * MR * gt[k].N; } }
     const int bits = T0->bits;
 #define YX_G(B, R) if (bits == B && MR == R) gemm_multi<B, R>(q, gt, nt, T0->lut, qx, Aw, T0->Kc, W);
-    YX_G(6, 1) YX_G(6, 2) YX_G(6, 4) YX_G(6, 8) YX_G(6, 16) YX_G(8, 1) YX_G(8, 2) YX_G(8, 4) YX_G(8, 8) YX_G(8, 16)
+    if (MR == 16 && g16) {
+      if (bits == 6 && g16 == 20) gemm_multi<6, 16, 2, 0>(q, gt, nt, T0->lut, qx, Aw, T0->Kc, W); else if (bits == 6 && g16 == 2) gemm_multi<6, 16, 0, 2>(q, gt, nt, T0->lut, qx, Aw, T0->Kc, W);
+      else if (bits == 8 && g16 == 20) gemm_multi<8, 16, 2, 0>(q, gt, nt, T0->lut, qx, Aw, T0->Kc, W); else if (bits == 8 && g16 == 2) gemm_multi<8, 16, 0, 2>(q, gt, nt, T0->lut, qx, Aw, T0->Kc, W);
+      else throw std::runtime_error("YX_G16: 20 (blocks requested ahead) or 2 (lookups requested ahead)"); }
+    else {
+    YX_G(6, 1) YX_G(6, 2) YX_G(6, 4) YX_G(6, 8) YX_G(6, 16) YX_G(8, 1) YX_G(8, 2) YX_G(8, 4) YX_G(8, 8) YX_G(8, 16) }
 #undef YX_G
     if (W > 1) { int k = 0; for (Tensor* T : ts) { const int64_t* pw = partw + poff[k++]; int64_t* out = T->part; const int N = T->N; const size_t n = (size_t)MR * N;
       q.parallel_for(sycl::range<1>(n), [=](sycl::id<1> i) { int64_t s = 0; for (int w = 0; w < W; ++w) s += pw[(size_t)w * n + i[0]]; out[i[0]] = s; }); } }
@@ -156,10 +174,11 @@ struct Engine {
   void gdn(Gdn& Y, int M, int n_commit) {
     const int MR = mr_of(M); const float e = eps;
     gemm_group({&Y.qkv, &Y.z}, M); mark("gdn: GEMM qkv+z");
-    if (fast) {
-      fx::k_gdn_post(q, M, fx::GdnPost{Y.qkv.part, Y.z.part, Y.qkv.tau, Y.z.tau, Y.qkv.sg_out, Y.z.sg_out, us, S, Y.wa, Y.wb, Y.A_log, Y.dt_bias, xn, Y.mixed, z, ab, Y.beta, Y.g, e}); mark("gdn: post (a/b, rotation)");
-      fx::k_conv(q, M, Y.mixed, Y.conv, Y.hist, Y.q, Y.k, Y.v); mark("gdn: conv");
-      state(Y, M, n_commit); mark("gdn: state recurrence");
+    if (fast) { const bool s2 = gset != 0; float *cq = s2 ? Y.q2 : Y.q, *ck = s2 ? Y.k2 : Y.k, *cv = s2 ? Y.v2 : Y.v, *cb = s2 ? Y.beta2 : Y.beta, *cg = s2 ? Y.g2 : Y.g;
+      if (s2 && M > MRMAX) throw std::runtime_error("gdn: the second buffer set holds 16 rows");
+      fx::k_gdn_post(q, M, fx::GdnPost{Y.qkv.part, Y.z.part, Y.qkv.tau, Y.z.tau, Y.qkv.sg_out, Y.z.sg_out, us, S, Y.wa, Y.wb, Y.A_log, Y.dt_bias, xn, Y.mixed, z, ab, cb, cg, e}); mark("gdn: post (a/b, rotation)");
+      fx::k_conv(q, M, Y.mixed, Y.conv, Y.hist, cq, ck, cv); mark("gdn: conv");
+      fx::k_state(q, M, n_commit, cq, ck, cv, cb, cg, Y.S, Sscr, core, Y.mixed, Y.hist, state_old(Y)); mark("gdn: state recurrence");
       fx::k_gdn_out(q, M, MR, core, z, Y.gnorm, Y.out.sg_in, e, alpha, qx, us, Aw); aw_ready = true; mark("gdn: out norm");
       gemm_group({&Y.out}, M); mark("gdn: GEMM out"); return; }
     { const float *wa = Y.wa, *wb = Y.wb, *SS = S; const uint16_t* x = xn; float* abp = ab;                       // a / b projections

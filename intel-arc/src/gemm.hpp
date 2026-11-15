@@ -79,7 +79,9 @@ sycl::event gemm(sycl::queue& q, const uint32_t* stream, const uint32_t* lut, co
 // the GPU otherwise).  Worker w handles groups [w*G/W, (w+1)*G/W) and writes its exact partial sums to
 // part[(w*MR + m)*N + n]; with W == 1 that is the final result, otherwise the caller adds the W partials (exact int64).
 struct GemmT { const uint32_t* stream = nullptr; int64_t* part = nullptr; int N = 0; };
-template <int BITS, int MR>
+// PF = 2: the code blocks of the next half group are requested in the middle of the current one.  GA = 2: the 16 table lookups of a
+// 32-column chunk are requested before the first result is used.  Both only reorder memory requests (same sums); they pay at 16 rows.
+template <int BITS, int MR, int PF = 0, int GA = 0>
 sycl::event gemm_multi(sycl::queue& q, const GemmT* t, int nt, const uint32_t* lut, const int8_t* qx, const int32_t* Aw, int Kc, int W) {
   constexpr int NW = 4 * BITS, D = MR > 8 ? 8 : MR, ND = MR > 8 ? 2 : 1;
   const int G = Kc / 512;
@@ -102,29 +104,42 @@ sycl::event gemm_multi(sycl::queue& q, const GemmT* t, int nt, const uint32_t* l
     const uint32_t r0 = 16u * rt, lane0 = r0 & 31u, gr = r0 >> 5;
     simd<int64_t, 16> acc[MR];
     unroll<MR>([&](auto mi) { acc[decltype(mi)::value] = 0; });
+    auto addr = [=](int s, int c) { return stream + ((size_t)(((uint32_t)s * rows32 + gr) * BITS + c) * 32 + lane0) * 4; };
+    simd<uint32_t, 64> nb[PF ? BITS : 1];
+    if constexpr (PF) unroll<BITS>([&](auto ci) { constexpr int c = decltype(ci)::value; nb[c] = block_load<uint32_t, 64>(addr(2 * g0, c)); });
+    const int s_last = 2 * g1 - 1;
     for (int g = g0; g < g1; ++g) {
       simd<int, 16 * D> d[ND];
       unroll<ND>([&](auto di) { d[decltype(di)::value] = 0; });
       for (int h = 0; h < 2; ++h) {
         const int s = 2 * g + h;
-        const uint32_t gq = (uint32_t)s * rows32 + gr;
         simd<uint32_t, 16> w[NW + 1];
-        unroll<BITS>([&](auto ci) { constexpr int c = decltype(ci)::value;
-          simd<uint32_t, 64> blk = block_load<uint32_t, 64>(stream + ((size_t)(gq * BITS + c) * 32 + lane0) * 4);
+        if constexpr (PF) unroll<BITS>([&](auto ci) { constexpr int c = decltype(ci)::value;
+          unroll<4>([&](auto ki) { constexpr int kk = decltype(ki)::value; w[c * 4 + kk] = nb[c].template select<16, 4>(kk); }); });
+        else unroll<BITS>([&](auto ci) { constexpr int c = decltype(ci)::value;
+          simd<uint32_t, 64> blk = block_load<uint32_t, 64>(addr(s, c));
           unroll<4>([&](auto ki) { constexpr int kk = decltype(ki)::value; w[c * 4 + kk] = blk.template select<16, 4>(kk); });
         });
+        const int sn = s < s_last ? s + 1 : s_last;      // the last trip requests its own blocks again (no branch in the loop body)
         unroll<8>([&](auto chi) { constexpr int ch = decltype(chi)::value;
+          if constexpr (PF && ch == 4) unroll<BITS>([&](auto ci) { constexpr int c = decltype(ci)::value; nb[c] = block_load<uint32_t, 64>(addr(sn, c)); });
           simd<int, 128> B;
-          unroll<8>([&](auto ii) { constexpr int i = decltype(ii)::value;
+          auto state = [&](auto ji) __attribute__((always_inline)) { constexpr int j = decltype(ji)::value; constexpr int a = BITS * (j + 1) - 12;
+            simd<uint32_t, 16> st;
+            if constexpr (a < 0) st = (w[0] << (uint32_t)(-a)) & 0xfffu;
+            else { constexpr int wi = a >> 5, sh = a & 31;
+                   if constexpr (sh + 12 <= 32) st = (w[wi] >> (uint32_t)sh) & 0xfffu;
+                   else st = ((w[wi] >> (uint32_t)sh) | (w[wi + 1] << (uint32_t)(32 - sh))) & 0xfffu; }
+            return st; };
+          if constexpr (GA) { simd<uint32_t, 16> x[16], a[16];
+            unroll<16>([&](auto ii) { constexpr int i = decltype(ii)::value; a[i] = state(std::integral_constant<int, 16 * ch + i>{}) * 4u; });
+            unroll<16>([&](auto ii) { constexpr int i = decltype(ii)::value; x[i] = slm_gather<uint32_t, 16>(a[i]); });
+            unroll<8>([&](auto ii) { constexpr int i = decltype(ii)::value;
+              B.template select<16, 1>(i * 16) = simd<int, 16>((x[2 * i] & 0xffffu) | (x[2 * i + 1] << 16u)); }); }
+          else unroll<8>([&](auto ii) { constexpr int i = decltype(ii)::value;
             simd<uint32_t, 16> gth[2];
             unroll<2>([&](auto hi) { constexpr int hh = decltype(hi)::value;
-              constexpr int j = 16 * ch + 2 * i + hh, a = BITS * (j + 1) - 12;
-              simd<uint32_t, 16> st;
-              if constexpr (a < 0) st = (w[0] << (uint32_t)(-a)) & 0xfffu;
-              else { constexpr int wi = a >> 5, sh = a & 31;
-                     if constexpr (sh + 12 <= 32) st = (w[wi] >> (uint32_t)sh) & 0xfffu;
-                     else st = ((w[wi] >> (uint32_t)sh) | (w[wi + 1] << (uint32_t)(32 - sh))) & 0xfffu; }
-              gth[hh] = slm_gather<uint32_t, 16>(st * 4u);
+              gth[hh] = slm_gather<uint32_t, 16>(state(std::integral_constant<int, 16 * ch + 2 * i + hh>{}) * 4u);
             });
             B.template select<16, 1>(i * 16) = simd<int, 16>((gth[0] & 0xffffu) | (gth[1] << 16u));
           });

@@ -1,0 +1,5 @@
+# gemm_decode on Intel(R) Arc(TM) Pro B60 Graphics
+shape,bits_per_weight,rows_M,prefetch,gather_ahead,workers,threads,ms_queued,ms_sync,Gweights_per_s,code_GB_per_s,int8_TOPS,check
+34816x5120,3,8,0,0,1,2176,0.2951,0.3024,604.0,226.5,9.66,exact
+34816x5120,3,8,0,3,1,2176,0.4664,0.4741,382.2,143.3,6.12,exact
+34816x5120,3,8,0,4,1,2176,0.3924,0.4000,454.3,170.3,7.27,exact

@@ -116,8 +116,18 @@ YXI float v_a8_tail(vf* x, int8_t* qx, float* alpha, int MR, int tok, int blk, i
     block_store<int8_t, 32>(qp + (size_t)c * MR * 32, o); });
   return als;
 }
-YXI void v_load512(vf* x, const float* p) { unroll<32>([&](auto ri) { constexpr int r = decltype(ri)::value; x[r] = block_load<float, 16>(p + r * 16); }); }
-YXI void v_store512(float* p, const vf* x) { unroll<32>([&](auto ri) { constexpr int r = decltype(ri)::value; block_store<float, 16>(p + r * 16, x[r]); }); }
+// Memory access in 256-byte pieces: a load or store costs a thread about 50 ns whatever its size, so 512 values go in 8 messages, not 32.
+// w512(p, f): f(r, v) for r = 0..31 with v = the 16 values at p + 16 r.   s512(p, f): stores f(r) for r = 0..31 to p + 16 r.
+template <int R> using rc = std::integral_constant<int, R>;
+template <class T, class Fn> YXI void w512(const T* p, Fn&& f) {
+  unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; simd<T, 64> v = block_load<T, 64>(p + 64 * q);
+    unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; const simd<T, 16> t = v.template select<16, 1>(16 * k); f(rc<4 * q + k>{}, t); }); }); }
+template <class T, class Fn> YXI void s512(T* p, Fn&& f) {
+  unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; simd<T, 64> v;
+    unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; v.template select<16, 1>(16 * k) = f(rc<4 * q + k>{}); });
+    block_store<T, 64>(p + 64 * q, v); }); }
+YXI void v_load512(vf* x, const float* p) { w512<float>(p, [&](auto ri, vf v) { x[decltype(ri)::value] = v; }); }
+YXI void v_store512(float* p, const vf* x) { s512<float>(p, [&](auto ri) { return x[decltype(ri)::value]; }); }
 // RMS factor of a row (rfac of kern.hpp) as a broadcast vector
 YXI vf v_rfac(const float* S, float eps) {
   const vf sv = block_load<float, 16>(S); float s = 0.f;
@@ -145,9 +155,17 @@ YXI void v_scales(uint32_t lid, int G, int tok, int M, int MR, float als, float*
 }
 // (float)acc * us [* r] * tau of one 512-block
 YXI void v_yrot(vf* x, const int64_t* acc, const float* tau, vf us) {
-  unroll<32>([&](auto ri) { constexpr int r = decltype(ri)::value; x[r] = (v_i2f(block_load<int64_t, 16>(acc + r * 16)) * us) * block_load<float, 16>(tau + r * 16); }); }
+  unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; simd<float, 64> tv = block_load<float, 64>(tau + 64 * q);
+    unroll<2>([&](auto pi) { constexpr int p = decltype(pi)::value; simd<int64_t, 32> av = block_load<int64_t, 32>(acc + 64 * q + 32 * p);
+      unroll<2>([&](auto ki) { constexpr int k = decltype(ki)::value; constexpr int r = 4 * q + 2 * p + k;
+        const simd<int64_t, 16> a1 = av.template select<16, 1>(16 * k); const vf t1 = tv.template select<16, 1>(16 * (2 * p + k));
+        x[r] = (v_i2f(a1) * us) * t1; }); }); }); }
 YXI void v_yrot_n(vf* x, const int64_t* acc, const float* tau, vf us, vf rf) {
-  unroll<32>([&](auto ri) { constexpr int r = decltype(ri)::value; x[r] = ((v_i2f(block_load<int64_t, 16>(acc + r * 16)) * us) * rf) * block_load<float, 16>(tau + r * 16); }); }
+  unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; simd<float, 64> tv = block_load<float, 64>(tau + 64 * q);
+    unroll<2>([&](auto pi) { constexpr int p = decltype(pi)::value; simd<int64_t, 32> av = block_load<int64_t, 32>(acc + 64 * q + 32 * p);
+      unroll<2>([&](auto ki) { constexpr int k = decltype(ki)::value; constexpr int r = 4 * q + 2 * p + k;
+        const simd<int64_t, 16> a1 = av.template select<16, 1>(16 * k); const vf t1 = tv.template select<16, 1>(16 * (2 * p + k));
+        x[r] = ((v_i2f(a1) * us) * rf) * t1; }); }); }); }
 
 // embedding rows -> h
 inline void k_embed(sycl::queue& q, int M, const uint32_t* codes, const float* lut, const float* sc, const float* sg, float* h, const int* ids) {
@@ -176,17 +194,21 @@ inline void k_res_norm(sycl::queue& q, int M, int MR, float* h, float* S, float*
     const int gid = (int)it.get_global_id(0), tok = gid / 10, blk = gid % 10; float* hp = h + (size_t)tok * H + blk * 512; vf x[32];
     if (acc) { v_yrot(x, acc + (size_t)tok * H + blk * 512, tau + blk * 512, vf(us[tok]));
       v_fwht512(x);
-      unroll<32>([&](auto ri) { constexpr int r = decltype(ri)::value;
-        x[r] = v_rbf(block_load<float, 16>(hp + r * 16) + v_rbf((x[r] * K512) * block_load<float, 16>(so + blk * 512 + r * 16))); block_store<float, 16>(hp + r * 16, x[r]); }); }
+      unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; simd<float, 64> hv = block_load<float, 64>(hp + 64 * q), sv = block_load<float, 64>(so + blk * 512 + 64 * q); simd<float, 64> ov;
+        unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; constexpr int r = 4 * q + k; const vf h1 = hv.template select<16, 1>(16 * k), s1 = sv.template select<16, 1>(16 * k);
+          x[r] = v_rbf(h1 + v_rbf((x[r] * K512) * s1)); ov.template select<16, 1>(16 * k) = x[r]; });
+        block_store<float, 64>(hp + 64 * q, ov); }); }
     else v_load512(x, hp);
     vf a[8];
     unroll<8>([&](auto qi) { constexpr int k = decltype(qi)::value; vf s = 0.f;
       unroll<4>([&](auto ji) { constexpr int j = decltype(ji)::value; s = s + x[k + 8 * j] * x[k + 8 * j]; }); a[k] = s; });
     S[tok * SST + blk] = v_tree128(a);
-    unroll<32>([&](auto ri) { constexpr int r = decltype(ri)::value;
-      const vf u = x[r] * (1.f + block_load<float, 16>(w + blk * 512 + r * 16));
-      if (xu) block_store<uint16_t, 16>(xu + (size_t)tok * H + blk * 512 + r * 16, simd<uint16_t, 16>(v_f2bf(u)));
-      x[r] = u * block_load<float, 16>(sg_in + blk * 512 + r * 16); });
+    unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; simd<float, 64> wv = block_load<float, 64>(w + blk * 512 + 64 * q), gv = block_load<float, 64>(sg_in + blk * 512 + 64 * q); simd<uint16_t, 64> uv;
+      unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; constexpr int r = 4 * q + k; const vf w1 = wv.template select<16, 1>(16 * k), g1 = gv.template select<16, 1>(16 * k);
+        const vf u = x[r] * (1.f + w1);
+        uv.template select<16, 1>(16 * k) = simd<uint16_t, 16>(v_f2bf(u));
+        x[r] = u * g1; });
+      if (xu) block_store<uint16_t, 64>(xu + (size_t)tok * H + blk * 512 + 64 * q, uv); });
     const float als = v_a8_tail(x, qx, alpha, MR, tok, blk, 10);
     v_scales((uint32_t)it.get_local_id(0), 10, tok, M, MR, als, us, Aw); });
 }
@@ -198,11 +220,15 @@ inline void k_gdn_post(sycl::queue& q, int M, const GdnPost P) {
     const vf rf = v_rfac(P.S + tok * SST, P.eps);
     if (b < 32) { vf x[32];
       if (b < 20) { v_yrot_n(x, P.aq + (size_t)tok * CV + b * 512, P.tq + b * 512, vf(P.us[tok]), rf); v_fwht512(x);
-        unroll<32>([&](auto ri) { constexpr int r = decltype(ri)::value;
-          block_store<uint16_t, 16>(P.mixed + (size_t)tok * CV + b * 512 + r * 16, simd<uint16_t, 16>(v_f2bf((x[r] * K512) * block_load<float, 16>(P.sq + b * 512 + r * 16)))); }); }
+        unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; simd<float, 64> sv = block_load<float, 64>(P.sq + b * 512 + 64 * q); simd<uint16_t, 64> ov;
+          unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; const vf s1 = sv.template select<16, 1>(16 * k);
+            ov.template select<16, 1>(16 * k) = simd<uint16_t, 16>(v_f2bf((x[4 * q + k] * K512) * s1)); });
+          block_store<uint16_t, 64>(P.mixed + (size_t)tok * CV + b * 512 + 64 * q, ov); }); }
       else { const int bb = b - 20; v_yrot_n(x, P.az + (size_t)tok * ZN + bb * 512, P.tz + bb * 512, vf(P.us[tok]), rf); v_fwht512(x);
-        unroll<32>([&](auto ri) { constexpr int r = decltype(ri)::value;
-          block_store<float, 16>(P.z + (size_t)tok * ZN + bb * 512 + r * 16, v_rbf((x[r] * K512) * block_load<float, 16>(P.sz + bb * 512 + r * 16))); }); }
+        unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; simd<float, 64> sv = block_load<float, 64>(P.sz + bb * 512 + 64 * q); simd<float, 64> ov;
+          unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; const vf s1 = sv.template select<16, 1>(16 * k);
+            ov.template select<16, 1>(16 * k) = v_rbf((x[4 * q + k] * K512) * s1); });
+          block_store<float, 64>(P.z + (size_t)tok * ZN + bb * 512 + 64 * q, ov); }); }
       return; }
     const int r = b - 32; const float* W = r < 48 ? P.wb + (size_t)r * H : P.wa + (size_t)(r - 48) * H; const uint16_t* X = P.xn + (size_t)tok * H;
     vf a[8]; unroll<8>([&](auto qi) { a[decltype(qi)::value] = 0.f; });
@@ -238,26 +264,36 @@ inline void k_conv(sycl::queue& q, int M, const uint16_t* mixed, const float* cw
 // State recurrence over the M rows: one thread per (head, 16 value columns j); the 128 key rows i are walked in order inside
 // each of the 4 chunks of 32.  Rows < n_commit update Sp in place; later rows continue in the scratch copy Ss.
 // Threads >= 384 (only when committing) roll the conv history: 20 blocks of 512 columns.
+// conv history: the last 3 of n committed rows (rows of `mixed`, older ones from the history itself)
+inline void k_hist(sycl::queue& q, int n_commit, const uint16_t* mixed, float* hist) {
+  q.parallel_for(sycl::range<1>(20), [=](sycl::id<1> it) SYCL_ESIMD_KERNEL { const int c0 = (int)it[0] * 512;
+      unroll<32>([&](auto ri) { constexpr int r16 = decltype(ri)::value * 16; vf nw[3];
+        unroll<3>([&](auto ki) { constexpr int k = decltype(ki)::value; const int r = n_commit - 3 + k;
+          if (r >= 0) nw[k] = v_bf2f(block_load<uint16_t, 16>(mixed + (size_t)r * CV + c0 + r16)); else nw[k] = block_load<float, 16>(hist + (size_t)(3 + r) * CV + c0 + r16); });
+        unroll<3>([&](auto ki) { constexpr int k = decltype(ki)::value; block_store<float, 16>(hist + (size_t)k * CV + c0 + r16, nw[k]); }); }); });
+}
+// Deferred replay: R rows of an earlier look-ahead pass that were accepted afterwards (their inputs Qo .. Go are still in the other
+// buffer set) are run first, in the same kernel and with the same operations; the state after them is the committed state.
+struct StateOld { int R = 0; const float *Q = nullptr, *K = nullptr, *V = nullptr, *B = nullptr, *G = nullptr; };
 inline void k_state(sycl::queue& q, int M, int n_commit, const float* Q, const float* K, const float* V, const float* B, const float* Gg, float* Sp, float* Ss, float* core,
-                    const uint16_t* mixed, float* hist) {
+                    const uint16_t* mixed, float* hist, const StateOld O = StateOld{}) {
   // The recurrence is serial in the rows, so its latency per row is what counts.  A (head, 16 state columns) block is shared by a
   // work-group of 2 threads; each keeps 64 of the 128 state rows in REGISTERS (no memory traffic for the state) and the two exchange
   // their partial sums through SLM with two barriers per row.  Row t: s *= e^g, kv = sum_i s_i k_i, d = (v - kv) * beta, s += k d,
   // o = sum_i s_i q_i -- per element the same operations in the same order as before (4 partial sums of 32 rows, ((p0+p1)+p2)+p3).
   // The state after row n_commit - 1 is written back to Sp; later rows (look-ahead) only change the registers.  Ss is no longer used.
   (void)Ss;
-  if (n_commit > 0) q.parallel_for(sycl::range<1>(20), [=](sycl::id<1> it) SYCL_ESIMD_KERNEL { const int c0 = (int)it[0] * 512;       // conv history: the last 3 committed rows
-      unroll<32>([&](auto ri) { constexpr int r16 = decltype(ri)::value * 16; vf nw[3];
-        unroll<3>([&](auto ki) { constexpr int k = decltype(ki)::value; const int r = n_commit - 3 + k;
-          if (r >= 0) nw[k] = v_bf2f(block_load<uint16_t, 16>(mixed + (size_t)r * CV + c0 + r16)); else nw[k] = block_load<float, 16>(hist + (size_t)(3 + r) * CV + c0 + r16); });
-        unroll<3>([&](auto ki) { constexpr int k = decltype(ki)::value; block_store<float, 16>(hist + (size_t)k * CV + c0 + r16, nw[k]); }); }); });
+  if (n_commit > 0) k_hist(q, n_commit, mixed, hist);
+  const int R = O.R, n_store = (R + n_commit > 0) ? R + n_commit : -1; const float *Qo = O.Q, *Ko = O.K, *Vo = O.V, *Bo = O.B, *Go = O.G;
   q.parallel_for(sycl::nd_range<1>(768, 2), [=](sycl::nd_item<1> ndi) SYCL_ESIMD_KERNEL {
     slm_init<512>();
     const int sub = (int)ndi.get_local_id(0), blk = (int)ndi.get_group(0), hd = blk >> 3, j0 = (blk & 7) * 16, kh = hd / 3, i0 = 64 * sub;
     const size_t so = (size_t)hd * 16384 + j0;
     vf s[64]; unroll<64>([&](auto ii) { constexpr int i = decltype(ii)::value; s[i] = block_load<float, 16>(Sp + so + (size_t)(i0 + i) * 128); });
-    for (int t = 0; t < M; ++t) { const float* kt = K + (size_t)t * 2048 + kh * 128 + i0; const float* qt = Q + (size_t)t * 2048 + kh * 128 + i0;
-      const vf eg = v_expf(vf(Gg[t * 48 + hd])); vf kk[4], a[2];
+    for (int tt = 0; tt < R + M; ++tt) { const bool old = tt < R; const int t = old ? tt : tt - R;
+      const float *Kb = old ? Ko : K, *Qb = old ? Qo : Q, *Vb = old ? Vo : V, *Bb = old ? Bo : B, *Gb = old ? Go : Gg;
+      const float* kt = Kb + (size_t)t * 2048 + kh * 128 + i0; const float* qt = Qb + (size_t)t * 2048 + kh * 128 + i0;
+      const vf eg = v_expf(vf(Gb[t * 48 + hd])); vf kk[4], a[2];
       unroll<4>([&](auto xi) { constexpr int x = decltype(xi)::value; kk[x] = block_load<float, 16>(kt + 16 * x); });
       unroll<2>([&](auto wi) { constexpr int w = decltype(wi)::value; vf acc = 0.f;
         unroll<32>([&](auto li) { constexpr int i = 32 * w + decltype(li)::value; s[i] = s[i] * eg; const float k1 = kk[i / 16][i % 16]; acc = acc + s[i] * k1; });
@@ -265,28 +301,33 @@ inline void k_state(sycl::queue& q, int M, int n_commit, const float* Q, const f
       slm_block_store<float, 16>(sub * 128, a[0]); slm_block_store<float, 16>(sub * 128 + 64, a[1]);
       barrier();
       const vf kv0 = slm_block_load<float, 16>(0), kv1 = slm_block_load<float, 16>(64), kv2 = slm_block_load<float, 16>(128), kv3 = slm_block_load<float, 16>(192);
-      const vf d = (block_load<float, 16>(V + (size_t)t * ZN + hd * 128 + j0) - (((kv0 + kv1) + kv2) + kv3)) * B[t * 48 + hd];
+      const vf d = (block_load<float, 16>(Vb + (size_t)t * ZN + hd * 128 + j0) - (((kv0 + kv1) + kv2) + kv3)) * Bb[t * 48 + hd];
       vf qq[4]; unroll<4>([&](auto xi) { constexpr int x = decltype(xi)::value; qq[x] = block_load<float, 16>(qt + 16 * x); });
       unroll<2>([&](auto wi) { constexpr int w = decltype(wi)::value; vf acc = 0.f;
         unroll<32>([&](auto li) { constexpr int i = 32 * w + decltype(li)::value; const float k1 = kk[i / 16][i % 16], q1 = qq[i / 16][i % 16]; s[i] = s[i] + k1 * d; acc = acc + s[i] * q1; });
         a[w] = acc; });
       slm_block_store<float, 16>(256 + sub * 128, a[0]); slm_block_store<float, 16>(256 + sub * 128 + 64, a[1]);
       barrier();
-      if (sub == 0) { const vf o0 = slm_block_load<float, 16>(256), o1 = slm_block_load<float, 16>(320), o2 = slm_block_load<float, 16>(384), o3 = slm_block_load<float, 16>(448);
+      if (sub == 0 && !old) { const vf o0 = slm_block_load<float, 16>(256), o1 = slm_block_load<float, 16>(320), o2 = slm_block_load<float, 16>(384), o3 = slm_block_load<float, 16>(448);
         block_store<float, 16>(core + (size_t)t * ZN + hd * 128 + j0, v_rbf(((o0 + o1) + o2) + o3)); }
-      if (t + 1 == n_commit) unroll<64>([&](auto ii) { constexpr int i = decltype(ii)::value; block_store<float, 16>(Sp + so + (size_t)(i0 + i) * 128, s[i]); }); } });
+      if (tt + 1 == n_store) unroll<64>([&](auto ii) { constexpr int i = decltype(ii)::value; block_store<float, 16>(Sp + so + (size_t)(i0 + i) * 128, s[i]); }); } });
 }
 // per-head RMS norm of core, gate with silu(z), quantised input of out_proj (+ its scales)
 inline void k_gdn_out(sycl::queue& q, int M, int MR, const float* core, const float* z, const float* gw, const float* si, float eps, float* alpha, int8_t* qx, float* us, int32_t* Aw) {
   q.parallel_for(sycl::nd_range<1>(M * 12, 12), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
     slm_init<256>();
     const int gid = (int)it.get_global_id(0), tok = gid / 12, blk = gid % 12; vf x[32]; v_load512(x, core + (size_t)tok * ZN + blk * 512);
+    simd<float, 64> gw0 = block_load<float, 64>(gw), gw1 = block_load<float, 64>(gw + 64);
     unroll<4>([&](auto hi) { constexpr int hd = decltype(hi)::value; vf sq[8];
       unroll<8>([&](auto qi) { constexpr int k8 = decltype(qi)::value; sq[k8] = x[hd * 8 + k8] * x[hd * 8 + k8]; });
       const vf rh = v_rsqrt(vdiv(vf(v_tree128(sq)), vf(128.f)) + eps);
-      unroll<8>([&](auto qi) { constexpr int k8 = decltype(qi)::value; constexpr int r = hd * 8 + k8;
-        const vf n2 = v_rbf(block_load<float, 16>(gw + k8 * 16) * v_rbf(x[r] * rh));
-        x[r] = v_rbf(n2 * v_silu(block_load<float, 16>(z + (size_t)tok * ZN + blk * 512 + r * 16))) * block_load<float, 16>(si + blk * 512 + r * 16); }); });
+      unroll<2>([&](auto pi) { constexpr int p = decltype(pi)::value;
+        simd<float, 64> zv = block_load<float, 64>(z + (size_t)tok * ZN + blk * 512 + (hd * 8 + p * 4) * 16), sv = block_load<float, 64>(si + blk * 512 + (hd * 8 + p * 4) * 16);
+        unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; constexpr int k8 = p * 4 + k, r = hd * 8 + k8;
+          vf g1; if constexpr (p == 0) g1 = gw0.template select<16, 1>(16 * k); else g1 = gw1.template select<16, 1>(16 * k);
+          const vf z1 = zv.template select<16, 1>(16 * k), s1 = sv.template select<16, 1>(16 * k);
+          const vf n2 = v_rbf(g1 * v_rbf(x[r] * rh));
+          x[r] = v_rbf(n2 * v_silu(z1)) * s1; }); }); });
     const float als = v_a8_tail(x, qx, alpha, MR, tok, blk, 12);
     v_scales((uint32_t)it.get_local_id(0), 12, tok, M, MR, als, us, Aw); });
 }
@@ -298,11 +339,12 @@ inline void k_mlp_post(sycl::queue& q, int M, int MR, const MlpPost P) {
     const int gid = (int)it.get_global_id(0), tok = gid / 34, blk = gid % 34; const size_t n0 = (size_t)tok * F + blk * 512;
     const vf rf = v_rfac(P.S + tok * SST, P.eps), u0 = P.us[tok]; vf x[32], y[32];
     v_yrot_n(y, P.au + n0, P.tu + blk * 512, u0, rf); v_fwht512(y);
-    unroll<32>([&](auto ri) { constexpr int r = decltype(ri)::value; y[r] = v_rbf((y[r] * K512) * block_load<float, 16>(P.su + blk * 512 + r * 16)); });
+    w512<float>(P.su + blk * 512, [&](auto ri, vf s1) { constexpr int r = decltype(ri)::value; y[r] = v_rbf((y[r] * K512) * s1); });
     v_yrot_n(x, P.ag + n0, P.tg + blk * 512, u0, rf); v_fwht512(x);
-    unroll<32>([&](auto ri) { constexpr int r = decltype(ri)::value;
-      const vf g = v_rbf((x[r] * K512) * block_load<float, 16>(P.sg + blk * 512 + r * 16));
-      x[r] = v_rbf(v_rbf(v_silu(g)) * y[r]) * block_load<float, 16>(P.si + blk * 512 + r * 16); });
+    unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; simd<float, 64> gv = block_load<float, 64>(P.sg + blk * 512 + 64 * q), iv = block_load<float, 64>(P.si + blk * 512 + 64 * q);
+      unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; constexpr int r = 4 * q + k; const vf g1 = gv.template select<16, 1>(16 * k), i1 = iv.template select<16, 1>(16 * k);
+        const vf g = v_rbf((x[r] * K512) * g1);
+        x[r] = v_rbf(v_rbf(v_silu(g)) * y[r]) * i1; }); });
     const float als = v_a8_tail(x, P.qx, P.alpha, MR, tok, blk, 34);
     v_scales((uint32_t)it.get_local_id(0), 34, tok, M, MR, als, P.us, P.Aw); });
 }

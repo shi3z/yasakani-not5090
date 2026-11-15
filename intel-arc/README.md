@@ -24,19 +24,23 @@ The 5060 Ti runs the CUDA engine with the fastest model (the quality model does 
 
 | | 5060 Ti, fastest | B60, fastest | B60, quality |
 |---|---|---|---|
-| thinking off | 149.1 | 71.8 | 69.2 |
-| thinking on | 123.6 | 63.8 | 62.4 |
+| thinking off | 149.1 | 83.5 | 77.5 |
+| thinking on | 123.6 | 66.5 | 65.6 |
 
 Long prompts (generation, tokens per second / prompt read, tokens per second):
 
 | prompt tokens | 5060 Ti, fastest | B60, fastest | B60, quality |
 |---|---|---|---|
-| 8000 | 99.1 / 792 | 48.8 / 551 | 49.0 / 482 |
-| 30000 | 96.1 / 720 | 38.5 / 489 | 38.1 / 434 |
-| 60000 | 76.5 / 643 | 34.6 / 423 | 29.5 / 381 |
+| 8000 | 99.1 / 792 | 49.3 / 553 | 50.5 / 487 |
+| 30000 | 96.1 / 720 | 39.3 / 490 | 38.6 / 437 |
+| 60000 | 76.5 / 643 | 35.2 / 424 | 29.7 / 384 |
 
 Prompts are read in batches (256 rows for the fastest model, 128 for the quality model, chosen from the free VRAM at start;
 `YX_PF_BATCH` overrides it, `YX_MEM=1` prints the allocations). The engine state after a prompt does not depend on the batch.
+With speculative decoding off the B60 generates 18.6 (fastest) and 17.7 (quality) tokens per second. A verify pass takes 65 ms with
+8 rows and 72 ms with 16; the engine verifies 16 drafted tokens when the expected extra accepted tokens pay for the 12 % (`YX_BLK16=2`
+selects the upstream rule, `0` / `1` force 8 / 16 rows). The generated tokens and the engine state do not depend on that choice
+(`tests/dec_check.py`).
 `PORT_NOTES.md` has the measurements behind these numbers and the approaches that did not work; raw outputs are in `bench/`.
 
 ## Layout

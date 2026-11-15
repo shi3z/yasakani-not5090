@@ -33,7 +33,7 @@ struct yskn_engine {
     E.q.wait(); mem_attn = yx::g_dev_bytes - mem_model - mem_head;
   }
   ~yskn_engine() { try { E.q.wait(); } catch (...) {} yx::dev_release(own0); yx::g_dev_bytes = 0; }
-  void reset() { E.q.wait(); pos = 0; hist.clear(); dr.reset();
+  void reset() { E.q.wait(); pos = 0; hist.clear(); dr.reset(); E.pend_rows = 0; E.gset = 0;
     for (auto& Y : E.L) if (!Y.full && Y.g.S) { E.q.memset(Y.g.S, 0, 48 * 128 * 128 * 4); E.q.memset(Y.g.hist, 0, 3 * yx::CV * 4); }
     E.q.wait(); }
   // one pass over M rows at positions pos..pos+M-1 (ids already in E.ids); commit advances the DeltaNet states
@@ -74,6 +74,7 @@ struct yskn_engine {
   // append tokens (committing); returns the token predicted after the last one.  am (optional): the choice after every row.
   int feed(const int* ids, int n, int* am = nullptr) {
     if (pos + n > max_ctx) throw std::runtime_error("prefill: context overflow"); int t = -1; int tmp[yx::MRMAX];
+    E.flush_states(); E.gset = 0;
     const int B = E.cap;                                                 // rows per committing pass (YX_PF_BATCH)
     for (int i = 0; i < n; i += B) { const int M = std::min(B, n - i);
       E.q.memcpy(E.ids, ids + i, M * 4).wait(); pass(M, true);
@@ -95,12 +96,18 @@ struct yskn_engine {
   void verify(const int* ids, int M, int* am) {
     if (M < 1 || M > yx::MRMAX || pos + M > max_ctx) throw std::runtime_error("verify: bad row count");
     const bool c1 = M == 1; E.q.memcpy(E.ids, ids, M * 4).wait(); std::copy(ids, ids + M, vids);
-    pass(M, c1); picks(M, pos, am); pre_committed = c1; last_M = M;
+    E.gset = (E.pend_rows && E.pend_set == 0) ? 1 : 0;      // rows waiting for their replay stay where they are
+    pass(M, c1); E.pend_rows = 0; picks(M, pos, am); pre_committed = c1; last_M = M;
   }
   void commit(int n_accept) {
     if (n_accept < 0 || n_accept >= last_M) throw std::runtime_error("commit: bad row count");
     const int rows = n_accept + 1;
-    if (!pre_committed) for (auto& Y : E.L) if (!Y.full && Y.g.S) E.state(Y.g, rows, rows);     // replay the DeltaNet states over the accepted rows
+    if (!pre_committed) {
+      static const bool defer = E.fast && !getenv("YX_NO_DEFER");
+      if (defer) { for (auto& Y : E.L) if (!Y.full && Y.g.S) yx::fx::k_hist(E.q, rows, Y.g.mixed, Y.g.hist);      // the conv history now; the states with the next pass
+        E.pend_rows = rows; E.pend_set = E.gset; }
+      else { const yx::fx::StateOld none; for (auto& Y : E.L) if (!Y.full && Y.g.S) { const bool s2 = E.gset != 0; yx::Gdn& g = Y.g;
+          yx::fx::k_state(E.q, rows, rows, s2 ? g.q2 : g.q, s2 ? g.k2 : g.k, s2 ? g.v2 : g.v, s2 ? g.beta2 : g.beta, s2 ? g.g2 : g.g, g.S, E.Sscr, E.core, g.mixed, g.hist, none); } } }
     hist.insert(hist.end(), vids, vids + rows); pos += rows; last_M = 0;
   }
 };
@@ -163,7 +170,7 @@ YX_API int yskn_nll(yskn_engine*, const int32_t*, int, float*) { g_err = "nll: n
 // Hashes of the committed state (tests): [0] DeltaNet states, [1] convolution histories, [2] KV cache (codes and scales of the slots < position),
 // [3] decoded K/V mirrors of the slots < position (0 without mirrors).  count (optional) = number of hashes written.
 YX_API int yskn_state_hash(yskn_engine* e, uint64_t* out, int n, int* count) { try {
-  using namespace yx; sycl::queue& q = e->E.q; q.wait(); uint64_t hsh[4] = {1469598103934665603ull, 1469598103934665603ull, 1469598103934665603ull, 1469598103934665603ull};
+  using namespace yx; sycl::queue& q = e->E.q; e->E.flush_states(); q.wait(); uint64_t hsh[4] = {1469598103934665603ull, 1469598103934665603ull, 1469598103934665603ull, 1469598103934665603ull};
   std::vector<uint8_t> buf; auto add = [&](int k, const void* dev, size_t bytes) { if (!dev || !bytes) return; buf.resize(bytes); q.memcpy(buf.data(), dev, bytes).wait();
     uint64_t x = hsh[k]; const uint64_t* w = (const uint64_t*)buf.data(); for (size_t i = 0; i < bytes / 8; ++i) x = (x ^ w[i]) * 1099511628211ull; for (size_t i = bytes / 8 * 8; i < bytes; ++i) x = (x ^ buf[i]) * 1099511628211ull; hsh[k] = x; };
   for (auto& Y : e->E.L) if (!Y.full && Y.g.S) { add(0, Y.g.S, (size_t)48 * 128 * 128 * 4); add(1, Y.g.hist, (size_t)3 * CV * 4); }
@@ -228,7 +235,13 @@ YX_API int yskn_spec_generate(yskn_engine* e, const int32_t* prompt, int n_promp
     struct Pend { int F, which; std::vector<int> ch; }; std::vector<Pend> dpend; double dema[2] = {3.0, 3.0}; int dprobe = 0, dctx_n = 0, dctx_pos = 0;
     const double b16_ratio = 0.22, b16_decay = 0.9, b16_full = 0.45, b16_floor = 0.6, b16_decay8 = 0.97; const int b16_probe = 256, b16_max = 256, b16_full_since = 4;
     double b16_ema = 0.0, b8_ema = 4.0, full8_ema = 0.0; int b16_since = 0, b16_n = 0, b16_probe_cur = b16_probe;
-    const int blk_mode = getenv("YX_BLK16") ? atoi(getenv("YX_BLK16")) : 2;       // 0: 8-row blocks only, 1: always 16, 2: adaptive (default)
+    const int blk_mode = getenv("YX_BLK16") ? atoi(getenv("YX_BLK16")) : 3;       // 0: 8-row blocks only, 1: always 16, 2: the reference controller, 3: cost-based (default)
+    // Mode 3 (a speed policy only: the tokens are the main model's in every mode).  On this GPU a 16-row pass costs c16 x an 8-row pass
+    // (measured 1.12), so 16 rows pay when the tokens they add per pass, g16, exceed (c16 - 1) x the tokens of an 8-row pass.
+    // g16 is observed directly in 16-row passes (accepted beyond 7) and estimated in 8-row passes: a fully accepted block would
+    // have gone on for `extra` more tokens (the mean seen in 16-row passes), any other block for none.
+    const double c16 = getenv("YX_B16_COST") ? atof(getenv("YX_B16_COST")) : 1.12, g_decay = getenv("YX_B16_DECAY") ? atof(getenv("YX_B16_DECAY")) : 0.85;
+    double g16_ema = 0.0, extra_ema = getenv("YX_B16_EXTRA") ? atof(getenv("YX_B16_EXTRA")) : 3.0, t8_ema = 4.0;
     auto b16_observe = [&](int a_obs) { const double v = std::max(0, a_obs - 7);
       b16_ema = (b16_n++ == 0) ? v : b16_decay * b16_ema + (1.0 - b16_decay) * v; b16_since = 0;
       b16_probe_cur = b16_ema >= std::max(b16_floor, b16_ratio * b8_ema) ? b16_probe : std::min(b16_max, b16_probe_cur * 2); };
@@ -247,6 +260,7 @@ YX_API int yskn_spec_generate(yskn_engine* e, const int32_t* prompt, int n_promp
       if (bdr) {
         int kdfl = std::min(7, g_eff); const int room16 = std::min(15, room);
         if (blk_mode == 1 && room16 > 7) { kdfl = room16; b16_pass = true; }
+        else if (blk_mode == 3 && room16 > 7 && g16_ema > (c16 - 1.0) * t8_ema) { kdfl = room16; b16_pass = true; }
         else if (blk_mode == 2 && room16 > 7 && (b16_ema >= std::max(b16_floor, b16_ratio * b8_ema) || b16_since >= b16_probe_cur || (full8_ema >= b16_full && b16_since >= b16_full_since))) { kdfl = room16; b16_pass = true; }
         if (g_eff > 0) {
           bdr_longm = n0 >= bdr_long_n && !c0.empty(); n_longm += bdr_longm;
@@ -269,6 +283,9 @@ YX_API int yskn_spec_generate(yskn_engine* e, const int32_t* prompt, int n_promp
       int a = 0; while (a < kch && chain[a] == amv[a]) ++a;
       if (blk_mode == 2 && bdr_dev) { b8_ema = b16_decay * b8_ema + (1.0 - b16_decay) * (std::min(a, 7) + 1);
         if (b16_pass) b16_observe(a); else { ++b16_since; full8_ema = 0.75 * full8_ema + 0.25 * (a >= 7 ? 1.0 : 0.0); b16_ema *= b16_decay8; } }
+      if (blk_mode == 3 && bdr_dev) { t8_ema = g_decay * t8_ema + (1.0 - g_decay) * (std::min(a, 7) + 1); double gobs = 0.0;
+        if (b16_pass) { gobs = std::max(0, a - 7); if (a >= 7) extra_ema = 0.8 * extra_ema + 0.2 * (a - 7); } else if (a >= 7) gobs = extra_ema;
+        g16_ema = g_decay * g16_ema + (1.0 - g_decay) * gobs; }
       if (bdr_dev) ++acc_hist[a];
       const int a_all = a; if (bdr_longm) { const int w = bdr_d0 ? 1 : 0; dema[w] += (a_all - dema[w]) / 16.0; }
       for (int j = 0; j < a_all; ++j) if (is_eos(chain[j])) { a = j; stop = true; break; }

@@ -416,3 +416,57 @@ Look-ahead on / off: identical ids on the 4 prompts, both models.
   working directory (and the speed model's file); now `kvq_u5.bin` next to the model file, after `$YX_KV_PROFILE` and
   `$YSKN_TB_PROFILE`. The profile files of the two models are byte-identical, so the earlier `pf_check` runs of the quality model
   (which do not go through the package and used the speed model's file) remain valid.
+
+## Decode speed (November 15, second round): profile, limits, what changed
+
+Speed model, context 65,536, greedy, `bench --n 512`. Target was 90 tok/s; reached 83.5 (from 71.8).
+
+**Profile of one pass before the changes** (8 verify rows, short context, `explain`, 4.16 tokens per pass):
+verify pass of the main model 59.8 ms (88 %) = GEMM 43, GDN non-GEMM 5.8, attention non-GEMM 6.7, res_norm 4.6, MLP post 3.4, head 2.2
+(stage values include profiling waits); draft model 6.5 ms per block of 8 or 16 tokens (GEMM 4.1); state replay 1.9 ms (48 launches).
+About 870 launches per pass x 3 us = 2.6 ms. Host waits: 3 to 4 per pass (ids, head read-back, drafter read-back), nothing per kernel.
+Rows: 1 row 54.4 ms, 8 rows 58.1, 16 rows 65.4 (+ head 2.2). Look-ahead off: 55.8 ms per token = 18.1 tok/s.
+
+**The decode GEMM is bound by table lookups, not by bus, XMX or registers** (`bench/architecture/b60/gemm_decode.cpp`, exact checks):
+- rate in the engine 530 to 630 G weights/s = 2.7 to 3.1 x 10^11 lookups/s at every row count 1..16; bus use 230 of 435 GB/s, XMX 1 to 17
+  of 196 TOPS, ALU 40 %, no spills, launch 3 us of 150 to 300.
+- code blocks requested one trip ahead: +-3 %; the 16 lookups of a chunk requested before use: +-3 % (the gains seen at 16 rows in
+  the micro-benchmark, 4 to 6 %, did not appear in the engine: `YX_G16=20|2`, kept as a test switch); half or a quarter of the lookups
+  from a copy of the table in global memory: 58 % / 33 % slower; one 32-lane message instead of two 16-lane ones: no change (the
+  assembly shows a real 32-lane `load.slm`), so the cost is per address.
+- the value table (one for all matrices of the speed model) has no structure: 3708 distinct pairs in 4096 entries, full rank.
+- 12.8 G lookups per pass at 3.0 to 3.2 x 10^11/s = 40 to 43 ms: the GEMM of a pass cannot go below about 40 ms with this weight format.
+
+**Changes** (all default; outputs unchanged):
+1. Rows per pass: the reference controller (thresholds of the CUDA engine) used 16 rows too rarely. New cost-based rule (`YX_BLK16=3`,
+   default; 2 = old): 16 rows when the tokens they add per pass exceed (c16 - 1) x the tokens of an 8-row pass, c16 = 1.12 measured
+   (`YX_B16_COST`); the gain is observed in 16-row passes and estimated in 8-row passes from fully accepted blocks. 8 rows only 70.4,
+   old controller 71.8, always 16: 79.3, new: 82.7 tok/s. (c16 = 1.06: 82.4, 1.2: 80.6.)
+2. Memory access of the non-GEMM kernels in 256-byte pieces instead of 64 (a load costs a thread about 50 ns whatever its size):
+   res_norm 4.57 -> 3.64 ms, MLP post 3.35 -> 2.87, GDN out 1.52 -> 1.32; 8-row pass 58.1 -> 56.5 ms.
+3. Deferred state replay: the accepted rows of a look-ahead pass are run at the start of the next pass's state kernel (second
+   16-row buffer set for q, k, v, beta, g per layer, +32 MB); 48 launches and 48 reloads of the states less. `YX_NO_DEFER=1` = old.
+   Flushed before prompt reading, state hashes and reset. About 1 % of a pass.
+4. `down_proj` with 4 column workers at 16 rows (`YX_W16`): 11.4 -> 10.2 ms; 16-row pass 65.4 -> 62.9 ms. (Slower at 8 rows: not used there.)
+
+**Checks** (`tests/dec_check.py`: ids, positions and the four state hashes after generation and after a prefix-reuse continuation,
+greedy and sampling): new build = pushed build = deferral off = always 16 rows = look-ahead off, both models. `pf_check`: batch 16 =
+automatic batch = pushed build (both models) = original 16-row kernels (speed). `la_check --sample --reuse` PASS both models. Self-check
+speed 3/3, quality 2/3 as before. Automatic batch unchanged: speed 256 (22.19 GB allocated, estimate 22.26), quality 128 (21.79 / 21.86).
+
+**Results** (tok/s; before -> after)
+| | speed | quality |
+|---|---|---|
+| bench, thinking off (mean of 4 prompts, 2 runs) | 71.8 -> 83.5 | 69.3 -> 77.5 |
+| per prompt explain / code / story / proof | 64.4 / 114.3 / 40.5 / 114.9 | 57.1 / 115.6 / 37.6 / 99.7 |
+| bench, thinking on | 63.8 -> 66.5 | 62.4 -> 65.6 |
+| look-ahead off | 18.1 -> 18.6 | 17.7 |
+| after an 8K / 30K / 60K prompt | 48.8 / 38.5 / 34.6 -> 49.3 / 39.3 / 35.2 | 49.0 / 38.1 / 29.5 -> 50.5 / 38.6 / 29.7 |
+| the same, look-ahead off | 17.5 / 15.1 / 12.9 | 16.7 / 14.5 / 12.5 |
+| prompt reading 8K / 30K / 60K | 551 / 489 / 423 -> 553 / 490 / 424 | 482 / 434 / 381 -> 487 / 437 / 384 |
+
+**Why not 90.** A pass is now about 65 ms (8 rows) to 72 ms (16 rows): GEMM 43 (floor 40), draft model 6.9, the rest 15 to 22. 90 tok/s
+at the present tokens per pass needs 60 / 67 ms... i.e. about 8 % less, all of it from the non-GEMM 22 ms. Left to do there: the cache
+write kernel `select` is scalar SYCL (1.6 ms per pass), trellis encode 2.1 to 3.6 ms, GDN post at 16 rows 3.2 ms (2048 threads),
+drafter GEMM at 449 instead of about 600 G weights/s (1 ms), 48 history launches at commit (0.15 ms). After long prompts the text of
+the test is accepted at 3.1 to 3.5 tokens per pass and attention adds 14 to 24 ms per pass, so those figures barely moved.
