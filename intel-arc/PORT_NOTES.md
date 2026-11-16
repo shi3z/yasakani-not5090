@@ -470,3 +470,177 @@ at the present tokens per pass needs 60 / 67 ms... i.e. about 8 % less, all of i
 write kernel `select` is scalar SYCL (1.6 ms per pass), trellis encode 2.1 to 3.6 ms, GDN post at 16 rows 3.2 ms (2048 threads),
 drafter GEMM at 449 instead of about 600 G weights/s (1 ms), 48 history launches at commit (0.15 ms). After long prompts the text of
 the test is accepted at 3.1 to 3.5 tokens per pass and attention adds 14 to 24 ms per pass, so those figures barely moved.
+
+## ISA-guided round (November 16): non-GEMM kernels, division modes, fused attention experiments
+
+Speed model unless noted, context 65,536, one job on the B60 at a time (a lock file). Baseline re-measured before any change: bench 83.5 / 83.5
+tok/s (two runs).
+
+### Tools
+- `tools/isa_report.py <dump dir> [--diff <dir2>] [--match ..] [--csv ..] [--md ..]`: per-kernel table from an IGC dump (GRF, static
+  instructions, GRF spills / fills = instructions the compiler annotated as spill / fill on the scratch surface, flag spills from the
+  header, dpas, block / gather loads and stores to global memory and to SLM, barriers, gateway sends, branches, SLM bytes from zeinfo).
+  Counts are static. Ordinary `load.ugm` is never counted as a spill.
+- `tests/np_prof.cpp`: per-launch time of the non-GEMM kernels back to back (one wait per 400 launches), empty launches of the same
+  shape, the MLP kernel cut after each stage, instruction-chain experiments. CAUTION: its inputs are whatever the last GEMM left in
+  the shared scratch (`part`), not the inputs of that kernel, so data-dependent costs (div_ieee early-outs, fallback rates) are not
+  those of a real pass; use `tests/pass_prof` (`YX_FINE=1`, `YX_PP_M=<rows>`) for real data.
+- `tests/fdiv_test.cpp`: division policies against `div_ieee` bit for bit (12 operand classes, special operands), native error in ulp.
+- `tests/div_ab.py`: strict against another division mode: logits per step, arg-max, state error, free-running tokens.
+- `tests/pass_prof`: `YX_PP_M=<rows>` (one row count), `YX_PP_ATTN=0,1,2,..` (times every attention experiment at that context).
+- Test hooks in the library: `yskn_x_set_div(mode)`, `yskn_x_set_attn(mode)`, `yskn_x_gdn_state(engine, layer, out)`.
+
+### What a thread of a small kernel costs (measured, in-order queue)
+- The engine's queue is in order: a kernel starts when the previous one is done, so with 80 to 544 threads per launch (decode) the
+  time of a launch is the LATENCY of one thread, not throughput. An out-of-order queue overlaps independent launches (the same
+  272-thread kernel: 3.3 us per launch whatever it computes) -- the first version of `fdiv_test` measured that and was misleading.
+- Empty launch 2.5 to 3.0 us; work shorter than that is hidden in it.
+- 8 rows, per launch (us): res_norm 13.8, MLP post 27.1, GDN post 27.8, conv 11.2, state 16.7, GDN out 16.5 (np_prof data).
+  Work-group size (1 / 2 / 17 / 34 threads) does not change the time of the MLP work: it is not a placement effect.
+- `div_ieee`: 45 to 120 ns per call in a thread (two control-register writes, each waits for all pipes: `{A@1}`); the native divide
+  about 6 ns. A scalar branch to a rare fallback after a division costs 75 to 110 ns as well (measured with four formulations), so
+  "native divide, check, branch to div_ieee" per division is slower than div_ieee.
+- Writing 4 or 8 independent expf chains interleaved does not help while each contains a div_ieee (it serialises the pipes).
+
+### Changes that are in the default path (bit-identical; checks below)
+1. **FWHT inside a register** (`v_fwht512`, `v_fwht256`): each of the four stages pairs even and odd lanes and writes sums to the
+   low half and differences to the high half; that rotates the lane index bits, so every stage is two 8-lane adds (+ 2 moves) and
+   after four stages the lanes are back. Per element the same additions in the same order. Before: 2-D selects; the assembly showed
+   the width-2 stage as 16 SCALAR adds per register (512 per transform) plus packing moves in the integer pipe. One transform
+   1528 -> 888 instructions, about 2.1 -> 1.0 us of a thread; `k_res_norm` 5775 -> 4501 instructions, `k_mlp_post` 10225 -> 8245,
+   attention `post` 7441 -> 5837, `combine` 9243 -> 7981. Two rewrites that did NOT work: the stages reordered stage-by-stage over
+   the registers (same time: not latency bound), and the width-2 stage on 64-bit strided views (the compiler produced the same
+   scalar adds).
+2. `v_silu_n<N>` / `v_expf_n<N>` (N vectors operation by operation) in MLP post, GDN out and conv; with div_ieee inside it gains
+   little in strict mode (see 3), it is what makes the native mode fast.
+   Effect of 1 + 2 in strict mode: bench 83.5 -> 84.2 tok/s, 8-row pass 55.6 -> 55.0 ms, prompt reading 553 / 490 / 424 ->
+   564 / 499 / 431 tok/s at 8K / 30K / 60K; quality model 77.5 -> 78.2 tok/s, 487 / 437 / 384 -> 495 / 444 / 389.
+
+### Division modes (`YX_DIV`, `fx::g_div_mode`; res_norm, MLP post, GDN out, conv take a policy; everything else stays div_ieee)
+- 0 strict (default): div_ieee. 2 native: `a / b` as compiled (inverse and product). 1 exact: `DivFast` = native divide, then the
+  residuals a - q b of q0, its neighbours and one more step with fused multiply-adds (the residual is convex in q, so the candidate
+  that beats both neighbours is the correctly rounded quotient), lanes outside the guaranteed range are marked and the thread
+  repeats its work with div_ieee after ONE check.
+- Native divide, measured on 64 M pairs per class: 1 ulp off in 29 % of the cases, 2 ulp in 0.05 %, never more for normal
+  operands in these tests (not a guarantee). Special operands: 0/0, x/0, inf, NaN, subnormals agree with div_ieee in the table of
+  `fdiv_test`; it differs when |b| is so large that 1/b is subnormal (3e38 / 3e38).
+- `DivFast`: 0 mismatches against div_ieee on every unmarked lane (800 M pairs); 11 ns per independent division. In the real
+  kernels mode 1 is nevertheless not faster than strict (8-row pass 55.8 against 55.0 ms; bench 83.3 against 84.2; tokens and state hashes identical to strict for both models): inside expf / silu
+  the 22-instruction correction is a dependent chain, and how many threads repeat on real data was not measured (np_prof's probe
+  showed every thread repeating, but on the scratch data described above). Kept as mode 1, not default.
+- **A/B strict against native** (`tests/div_ab.py`, 200 tokens, 4 prompts: Japanese, English, code, mathematics):
+
+  | | speed model | quality model |
+  |---|---|---|
+  | 8-row pass (pass_prof) | 55.0 -> 53.2 ms | |
+  | pass after 8K / 30K / 60K prompt (ms) | 69.3 / 78.5 / 92.4 -> 67.9 / 76.6 / 90.7 | 71.7 / 82.1 / 95.7 -> 69.5 / 79.1 / 93.5 |
+  | prompt reading 8K / 30K / 60K (tok/s) | 564 / 499 / 431 -> 581 / 512 / 440 | 495 / 444 / 389 -> 510 / 456 / 398 |
+  | bench mean (different text, see below) | 84.2 -> 87.8 | 78.2 -> 80.2 |
+  | bench, thinking on | 67.1 -> 64.8 | 66.1 -> 60.2 |
+  | logits, same inputs: RMS error (mean over steps) | 0.056 to 0.069 | 0.055 to 0.090 |
+  | logits, same inputs: largest error | 0.50 to 6.2 | 0.62 to 13.7 |
+  | arg-max equal, same inputs | 199, 200, 200, 199 of 200 | 198, 196, 200, 198 of 200 |
+  | DeltaNet state, relative error, layers 0 / 30 / 62 | 5e-4 / 2e-2 / 3e-2 from the first step, not growing over 200 steps | the same |
+  | free-running greedy: identical tokens | 78, 200, 200, 86 of 200 | 0, 40, 200, 103 of 200 |
+  | self-check | 2 of 3 (thinking differs) | 3 of 3 (strict: 2 of 3, the known near-tie) |
+
+  A 1 to 2 ulp difference is NOT negligible in this model: every GEMM input is rounded to int8 with a scale taken from the block
+  maximum and many values are rounded to bf16 / fp16, so a last-bit difference flips a rounding now and then (about 1e-5 per
+  value, 17,408 values per row in the MLP), each flip is a 1/127 step, and 64 layers carry it on: 2 to 3 % relative state error in
+  the deep layers and logit errors of the size of small top-1 / top-2 margins. Under the same inputs the arg-max changes in 0 to
+  2 % of the positions; free-running text departs from the strict text in 5 of 8 runs (the departed texts read equally well: same
+  structure and content, other wording). Mean tok/s of the bench moves by the changed text (tokens per pass), not only by the
+  pass time, in both directions (thinking on is slower in native mode).
+  Decision: strict stays the default (bit-exact checks against the reference, look-ahead on/off and 8/16-row equalities hold only
+  there); native is an option (`YX_DIV=2`) worth 2 to 3 % of a pass and 2 to 3 % of prompt reading.
+
+### Fused attention experiments (`YX_ATTN_FA`, `g_attn_mode`; default 0 = score16 + vacc16 untouched)
+All experiments use the arithmetic of fa48 (online softmax per group of 16 keys) and are bit-identical to fa48 -- checked, not
+assumed: engine state hashes and greedy continuations of `pf_check` (15 prompt lengths up to 3,000 tokens, several chunkings) are
+identical to fa48 for every experiment. fa48 itself differs from the default (15 of 15).
+NOT done: the same check with prompts of 9,000 and 20,011 tokens and three repeats. The first of these runs, fa48 itself
+(`YX_ATTN_FA=1`, the kernel that existed before this round), ended with `UR_RESULT_ERROR_DEVICE_LOST` and a hung process; the run was
+stopped, the card works again (self-check 3/3 afterwards) and the cause was not investigated. All twelve kernels did run at 8K, 30K
+and 60K in `pass_prof` (timing only). One more reason to keep the fa48 family out of the default path.
+
+Pipeline (`fa_p<QW, RG, PIPE = 1, RS>`), phase p = 0 .. R (R rounds of RG groups of 16 keys):
+
+    time      score threads (QW)                   value threads (2 QW)
+    pre       -                                    copy K(0) -> K[0]                               | barrier
+    phase 0   scores(0): read K[0], write W[0],C[0]   copy K(1) -> K[1]; copy V(0) -> V[0]          | barrier
+    phase p   scores(p): read K[p&1], write W[p&1],C[p&1]   copy K(p+1) -> K[(p+1)&1]; copy V(p) -> V[p&1];
+                                                   values(p-1): read V[(p-1)&1], W[(p-1)&1], C[(p-1)&1]   | barrier
+    phase R   -                                    values(R-1)                                     | barrier
+    end       write pm, pl; l -> SLM               | barrier |  read l, write the sums
+
+- Dependencies: the running maximum and running sum of a query live in the registers of ITS score thread and are updated in key
+  order by that thread only; the sums o live in the registers of the value threads and are updated in key order (rescale by C,
+  then the products of the group). The only data crossing threads are W (weights) and C (rescale factors) of a round, written in
+  phase p and read in phase p + 1, and the tiles. In a phase no buffer is both read and written: K[p&1] is read, K[(p+1)&1]
+  written; V[p&1] written, V[(p-1)&1] read; W / C[p&1] written, W / C[(p-1)&1] read. Every thread passes R + 2 barriers (R depends
+  only on the part), against 3 R + 1 in fa48.
+- SLM per work-group (zeinfo): fa48 86,016; pipeline 48 with RG 2: 87,040; RG 1: 44,032; 24 threads with RG 1 (pipeline) or RG 2
+  (phases): 38,912; 24 threads pipeline RG 2 or phases RG 4: 76,800. All below 128 KiB.
+
+256-row pass, scores + values of the 16 attention layers, ms (median of 5 after a warm-up, spread below 0.3 %), GPU exclusive:
+
+| `YX_ATTN_FA` | kernel | 8K | 30K | 60K | vs default | threads | SLM | barriers per round | flag spill store / load | instructions |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | score16 + vacc16 | 43.8 | 152.4 | 300.3 | 1.00 | 16 + 16 | 32K + 40K | 2 + 2 | 0 / 0 | 1725 + 969 |
+| 1 | fa48 | 96.9 | 347.0 | 687.8 | 2.28 | 48 | 84K | 3 | 12 / 25 | 3009 |
+| 2 | pipeline 48, RG 2 | 86.9 | 310.7 | 615.5 | 2.04 | 48 | 85K | 1 | 10 / 19 | 3146 |
+| 9 | pipeline 48, RG 1 | 89.1 | 318.5 | 630.9 | 2.09 | 48 | 43K | 1 | 10 / 19 | 3047 |
+| 5 | pipeline 48, RG 2, vector rescale | 88.5 | 316.3 | 626.7 | 2.08 | 48 | 85K | 1 | 10 / 19 | 3108 |
+| 6 | fa48 phases, vector rescale | 96.6 | 345.6 | 685.4 | 2.27 | 48 | 85K | 3 | 13 / 26 | 3029 |
+| 3 | FA24 (phases), RG 2 | 103.0 | 367.1 | 725.9 | 2.41 | 24 | 38K | 3 | 10 / 22 | 3061 |
+| 10 | FA24 (phases), RG 4 | 195.0 | 699.5 | 1385.7 | 4.59 | 24 | 75K | 3 | 10 / 22 | 3053 |
+| 4 | pipeline 24, RG 1 | 86.6 | 309.6 | 612.9 | 2.03 | 24 | 38K | 1 | 8 / 16 | 3050 |
+| 8 | pipeline 24, RG 2 | 165.9 | 595.3 | 1178.6 | 3.91 | 24 | 75K | 1 | 8 / 16 | 3130 |
+| 7 | score16o + vacc16o (separate kernels, online softmax, no score buffer) | 46.4 | 163.7 | 322.0 | 1.07 | 16 + 16 | 32K + 42K | 2 + 2 | 5 / 10, 0 / 0 | 2201 + 1053 |
+
+All have 128 GRF, no GRF spills, 24 `dpas` (16 + 8). What the numbers say:
+- Running scores and values at the same time (pipeline) gains 10 % over fa48, no more: the score thread is the long pole (16 XMX
+  products, 32 SLM loads and the softmax of 8 x 16 scores per group against 8 products and 17 loads in a value thread), so the
+  value threads still wait about half of the time, and only 16 of the 48 threads of a work-group do score work. The default runs
+  the score work on all threads of a core, then the value work on all threads.
+- Half-size work-groups do not help by themselves (FA24 is slower than fa48), and with 75 to 77 KiB of SLM a 24-thread group is
+  twice as slow as with 38 KiB: evidence that a second group shares the core only when two groups' SLM fit 128 KiB. Pipeline 24
+  with 38 KiB equals pipeline 48.
+- The vector rescale does not remove flag spills (they come from the per-query conditions of the online softmax in the score
+  code: score16o has them too, score16 has none) and is 2 % slower (64 multiplies per group that were skipped before).
+- Dropping the float score buffer (experiment 7) is 7 % SLOWER than the default: the stores and loads it saves (4 of about 36
+  messages per thread and group) cost less than the per-query scalar work of the online softmax.
+- A fused kernel in which every thread does both roles would need the query operands (64 registers) and the sums of 16 dimension
+  chunks (128) in one thread: not possible with 128 GRF; with 4 queries per thread it fits but needs twice the SLM tile loads and
+  XMX instructions per query. Not built.
+Conclusion: score16 + vacc16 stays the default; the experiments stay in the source behind `YX_ATTN_FA` (1 to 11). Numerical error
+of the fa48 family against the default and its effect on tokens were not evaluated (none is a candidate).
+
+### ISA before / after (static counts; `tools/isa_report.py`; before = dump of the 83.5 build, after = this round)
+
+| kernel | instructions before | after, strict | after, native | flag spills (after) | branches before / strict / native |
+|---|---|---|---|---|---|
+| res_norm | 5775 | 4501 | 3998 | 0 | 83 / 83 / 17 |
+| MLP post | 10225 | 8245 | 6730 | 16 store, 32 load (native 8, 16) | 207 / 207 / 9 |
+| GDN out | 7169 | 6494 | 4900 | 0 | 225 / 225 / 15 |
+| conv | 2293 | 1781 | 1518 | 0 | 105 / 86 / 52 |
+| GDN post | 5648 | 4368 | (no policy) | 0 | 25 / 25 |
+| attention post | 7441 | 5837 | (no policy) | 0 | 125 / 125 |
+| attention combine | 9243 | 7981 | (no policy) | 0 | 283 / 283 |
+
+No GRF spills in any of them (128 GRF). The branches of the strict kernels are the early-out `goto` / `join` of div_ieee.
+
+### Decode: where the 8-row pass stands (strict, 55.0 ms + head 2.2 + draft model 6.9)
+GEMM 43 (floor about 40, previous section); with waits: res_norm 3.25, MLP post 2.94, GDN post 1.84, GDN state 1.5, GDN out 1.34,
+conv 0.76, attention post + trellis 2.08, select 1.6, scores 1.0, combine 0.6. 90 tok/s was not reached: 84.2 strict, 87.8 native
+(with different text). Next candidates by measured size: (a) the int8 tail of every a8 producer (FWHT + fp16 rounding + 33
+divisions: 3.3 us x 240 launches = 0.8 ms); (b) `select` (scalar SYCL, 1.6 ms); (c) GDN post at 16 rows (2048 threads, 53 us x 48);
+(d) the moves around the in-register FWHT stages (2 of the 4 instructions per stage: hand-written assembly could use the strided
+regions directly -- `ocloc disasm` / `asm` exist on this machine, loading a patched binary through Level Zero was not tried);
+(e) the policy for the remaining kernels (GDN post, attention post / combine, draft model) if native mode is to be used.
+
+### Checks of the final build of this round (default modes)
+Both models: `dec_check` (tokens, positions, state hashes; greedy, sampling, prefix reuse) identical to the build before this round
+and identical with look-ahead off; `pf_check` states identical to the build before this round with the automatic batch and with
+batch 16. Self-check: speed 3/3, quality 2/3 (the known near-tie in the thinking case). Automatic batch unchanged: speed 256 (22.19 GB
+allocated), quality 128 (21.79 GB).

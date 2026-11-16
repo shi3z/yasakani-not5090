@@ -324,3 +324,12 @@ YX_API int yskn_spec_generate(yskn_engine* e, const int32_t* prompt, int n_promp
     return 0;
   } catch (const std::exception& ex) { g_err = ex.what(); return -1; }
 }
+// ---- test hooks (not part of the upstream interface) ----
+// division mode of the non-GEMM kernels: 0 strict (div_ieee), 1 exact (fast path + div_ieee fallback), 2 native (not bit-identical); returns the previous mode
+YX_API int yskn_x_set_div(int mode) { const int old = yx::fx::g_div_mode; if (mode >= 0 && mode <= 2) yx::fx::g_div_mode = mode; return old; }
+// DeltaNet state of one layer (48 x 128 x 128 floats); -1 for an attention layer
+YX_API int yskn_x_gdn_state(yskn_engine* e, int layer, float* out) { YX_TRY(
+  if (layer < 0 || layer >= (int)e->E.L.size() || e->E.L[layer].full) throw std::runtime_error("x_gdn_state: not a DeltaNet layer");
+  e->E.flush_states(); e->E.q.memcpy(out, e->E.L[layer].g.S, (size_t)48 * 128 * 128 * 4).wait()) }
+// attention kernels: 0 default, > 0 experiments (see attn_forward); returns the previous value
+YX_API int yskn_x_set_attn(int mode) { const int old = yx::g_attn_mode; if (mode >= 0) yx::g_attn_mode = mode; return old; }

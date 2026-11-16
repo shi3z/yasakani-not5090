@@ -18,8 +18,54 @@ constexpr int F = 17408, ZN = 6144, CV = 10240;      // MLP width, z / v width, 
 #define YXI inline __attribute__((always_inline))
 YXI vu bits(vf x) { return x.template bit_cast_view<uint32_t>(); }
 YXI vf flt(vu u) { return u.template bit_cast_view<float>(); }
+// Division policies.  div_ieee is exact but costs a thread 45 to 120 ns per call: it rewrites the control register twice and every
+// write waits for all pipes to drain.  A branch to a rare fallback after each division costs as much (measured: 75 to 110 ns), so
+// the fast policy has no branch: it marks the lanes it cannot guarantee in `bad`, and the kernel checks once per thread and repeats
+// its work with the exact policy (kernels: `body(fast); if (fast.failed()) body(ieee);`, the body must not read what it wrote).
+//
+// DivFast: the native divide (a * inv(b); measured 1 ulp off in 29 % of the cases, 2 ulp in 0.05 %), then the residuals a - q b of
+// the candidates with a fused multiply-add (exact for the candidates next to the quotient; larger ones only grow).  The residual is
+// convex in q, so the candidate that beats both its neighbours is the float nearest to a / b (a tie cannot occur for normal
+// quotients).  Steps: q0 and its two neighbours; one more step in the chosen direction; the neighbour beyond that only as a
+// check (better still -> bad).  Guaranteed when b and q0 are normal and away from the ends of the exponent range and the residuals
+// cannot underflow (|a| >= 2^-95), or a == 0; other lanes -> bad.  tests/fdiv_test.cpp compares with div_ieee bit for bit.
+struct DivIeee {};
+YXI vf dv(DivIeee&, vf a, vf b) { return div_ieee<float, 16>(a, b); }
+YXI bool failed(const DivIeee&) { return false; }
+struct DivFast { vu bad = 0u; };
+YXI bool failed(const DivFast& d) { return (d.bad != 0u).any(); }
+YXI vf dv(DivFast& d, vf a, vf b) { namespace ex = sycl::ext::intel::experimental::esimd;
+    const vf q0 = a / b; const vu ua = bits(a), ub = bits(b), uq = bits(q0);
+    // magnitudes inside [2^-124, 2^124] for b and q0, [2^-95, 2^124] for a (NaN and infinity fail the comparisons), or a == 0
+    const vf fa = flt(ua & 0x7fffffffu), fb = flt(ub & 0x7fffffffu), fq = flt(uq & 0x7fffffffu); const float LO = u2f(0x01800000u), HI = u2f(0x7d800000u), LA = u2f(0x10000000u);
+    const vm ok = (fb >= LO) & (fb <= HI) & ((((fq >= LO) & (fq <= HI)) & ((fa >= LA) & (fa <= HI))) | (fa == 0.f));
+    const vf nb = flt(ub ^ 0x80000000u), qp = flt(uq + 1u), qm = flt(uq - 1u);
+    const vf r0 = ex::fma(q0, nb, a), rp = ex::fma(qp, nb, a), rm = ex::fma(qm, nb, a);
+    vu best = bits(r0) & 0x7fffffffu; const vu ap = bits(rp) & 0x7fffffffu, am = bits(rm) & 0x7fffffffu; vf q = q0;
+    const vm up = ap < best; q.merge(qp, up); best.merge(ap, up);
+    const vm dn = am < best; q.merge(qm, dn); best.merge(am, dn);
+    vu st = 0u; st.merge(vu(1u), up); st.merge(vu(0xffffffffu), dn);
+    const vf q2 = flt(bits(q) + st); const vu a2 = bits(ex::fma(q2, nb, a)) & 0x7fffffffu; const vm t2 = a2 < best; q.merge(q2, t2); best.merge(a2, t2);
+    const vf q3 = flt(bits(q2) + st); const vu a3 = bits(ex::fma(q3, nb, a)) & 0x7fffffffu;
+    d.bad.merge(vu(1u), (!ok) | (t2 & (a3 < best)));
+    return q; }
+// DivNative: the native divide as it is (a * inv(b)): not correctly rounded, results differ from the reference in the last bits.
+struct DivNative {};
+YXI vf dv(DivNative&, vf a, vf b) { return a / b; }
+YXI bool failed(const DivNative&) { return false; }
+// Division mode of the kernels that take a policy (YX_DIV; tests may set g_div_mode between passes):
+//   0 strict   div_ieee everywhere (the reference behaviour)
+//   1 exact    DivFast, and div_ieee for the threads that marked a lane: same bits as 0
+//   2 native   DivNative: fastest, NOT bit-identical
+inline int g_div_mode = [] { const char* e = std::getenv("YX_DIV"); return e ? atoi(e) : 0; }();
+template <int DM, class B> YXI float run_div(B&& body) {
+  if constexpr (DM == 0) { DivIeee e; return body(e); }
+  else if constexpr (DM == 2) { DivNative n; return body(n); }
+  else { DivFast f; float r = body(f); if (failed(f)) { DivIeee e; r = body(e); } return r; }
+}
 YXI vf vdiv(vf a, vf b) { return div_ieee<float, 16>(a, b); }
 YXI vf vsqrt(vf a) { return sqrt_ieee<float, 16>(a); }
+template <class D> YXI vf v_rsqrt(vf x, D& d) { return dv(d, vf(1.f), vsqrt(x)); }
 YXI vf v_rsqrt(vf x) { return vdiv(vf(1.f), vsqrt(x)); }
 YXI vu v_f2bf(vf f) { vu u = bits(f); u += 0x7fffu + ((u >> 16) & 1u); return u >> 16; }
 YXI vf v_rbf(vf f) { return flt(v_f2bf(f) << 16); }
@@ -35,7 +81,7 @@ YXI vf v_rf16(vf f) {
 }
 // pm_expf: the "mid" branch of the scalar code is the general branch with k = +-1 (t * LN2 is exact there), and the k == 0
 // branch is reached exactly when |x| <= ln2/2 (then hi = x, lo = 0, r = x).
-YXI vf v_expf(vf x) {
+template <class D> YXI vf v_expf(vf x, D& d) {
   const vu ux = bits(x), ax = ux & 0x7fffffffu; const vm neg = ux >= 0x80000000u, big = ax > 0x3eb17218u;
   const float LN2HI = u2f(0x3f317200u), LN2LO = u2f(0x35bfbe8eu);
   vi k = u2f(0x3fb8aa3bu) * x + flt((ux & 0x80000000u) | 0x3f000000u);        // truncating conversion
@@ -44,7 +90,7 @@ YXI vf v_expf(vf x) {
   const vf tt = r * r, c = r - tt * (u2f(0x3e2aaa8fu) + tt * u2f(0xbb355215u));
   const vm kz = k == 0;
   vf den = 2.f - c; den.merge(c - 2.f, kz);
-  const vf qn = vdiv(r * c, den);
+  const vf qn = dv(d, r * c, den);
   const vf y = 1.f - ((lo - qn) - hi);
   vf res = y * flt(vu(k + 0x7f) << 23);
   res.merge((y * 2.f) * u2f(0x7f000000u), k == 128);
@@ -55,6 +101,46 @@ YXI vf v_expf(vf x) {
   res.merge(vf(u2f(0x7f800000u)), (!neg) & (ax >= 0x42b17218u));
   res.merge(x + x, ax > 0x7f800000u);
   return res;
+}
+YXI vf v_expf(vf x) { DivIeee e; return v_expf(x, e); }
+// expf / silu of N vectors at once, written operation by operation over the N vectors: a thread executes in order, so N independent
+// chains in turn hide the latency of each instruction behind the other chains (per lane the same operations as v_expf / v_silu).
+template <int N, class D> YXI void v_expf_n(vf* x, D& d) {
+#define YX_EACH(...) unroll<N>([&](auto ii_) { constexpr int i = decltype(ii_)::value; __VA_ARGS__; })
+  const float LN2HI = u2f(0x3f317200u), LN2LO = u2f(0x35bfbe8eu);
+  vu ux[N], ax[N]; vi k[N]; vf t[N], hi[N], lo[N], r[N], tt[N], c[N], den[N], qn[N], y[N], res[N];
+  YX_EACH(ux[i] = bits(x[i]));
+  YX_EACH(ax[i] = ux[i] & 0x7fffffffu);
+  YX_EACH(t[i] = u2f(0x3fb8aa3bu) * x[i] + flt((ux[i] & 0x80000000u) | 0x3f000000u));
+  YX_EACH(k[i] = t[i]);                                                                       // truncating conversion
+  YX_EACH(vi k1 = 1; k1.merge(vi(-1), ux[i] >= 0x80000000u); k[i].merge(k1, ax[i] < 0x3f851592u); k[i].merge(vi(0), !(ax[i] > 0x3eb17218u)));
+  YX_EACH(t[i] = k[i]);
+  YX_EACH(hi[i] = x[i] - t[i] * LN2HI);
+  YX_EACH(lo[i] = t[i] * LN2LO);
+  YX_EACH(r[i] = hi[i] - lo[i]);
+  YX_EACH(tt[i] = r[i] * r[i]);
+  YX_EACH(c[i] = r[i] - tt[i] * (u2f(0x3e2aaa8fu) + tt[i] * u2f(0xbb355215u)));
+  YX_EACH(den[i] = 2.f - c[i]; den[i].merge(c[i] - 2.f, k[i] == 0));
+  YX_EACH(tt[i] = r[i] * c[i]);
+  YX_EACH(qn[i] = dv(d, tt[i], den[i]));
+  YX_EACH(y[i] = 1.f - ((lo[i] - qn[i]) - hi[i]));
+  YX_EACH(res[i] = y[i] * flt(vu(k[i] + 0x7f) << 23));
+  YX_EACH(res[i].merge((y[i] * 2.f) * u2f(0x7f000000u), k[i] == 128));
+  YX_EACH(res[i].merge((y[i] * flt(vu(k[i] + (0x7f + 100)) << 23)) * u2f(0x0d800000u), k[i] < -125));
+  YX_EACH(res[i].merge(1.f - (qn[i] - r[i]), k[i] == 0));
+  YX_EACH(res[i].merge(1.f + x[i], ax[i] < 0x39000000u));
+  YX_EACH(res[i].merge(vf(0.f), ux[i] > 0xc2cff1b5u));
+  YX_EACH(res[i].merge(vf(u2f(0x7f800000u)), (!(ux[i] >= 0x80000000u)) & (ax[i] >= 0x42b17218u)));
+  YX_EACH(res[i].merge(x[i] + x[i], ax[i] > 0x7f800000u));
+  YX_EACH(x[i] = res[i]);
+}
+// g[i] <- silu(g[i]), i < N
+template <int N, class D> YXI void v_silu_n(vf* g, D& d) {
+  vf e[N]; YX_EACH(e[i] = flt(bits(g[i]) ^ 0x80000000u));
+  v_expf_n<N>(e, d);
+  YX_EACH(e[i] = 1.f + e[i]);
+  YX_EACH(g[i] = dv(d, g[i], e[i]));
+#undef YX_EACH
 }
 YXI vf v_logf(vf x) {
   vu ix = bits(x); vi k = 0; const vm sub = ix < 0x00800000u;
@@ -68,6 +154,7 @@ YXI vf v_logf(vf x) {
   const vf R = t2 + t1, hfsq = (0.5f * f) * f, dk = k;
   return dk * u2f(0x3f317180u) - ((hfsq - (s * (hfsq + R) + dk * u2f(0x3717f7d1u))) - f);
 }
+template <class D> YXI vf v_silu(vf x, D& d) { return dv(d, x, 1.f + v_expf(flt(bits(x) ^ 0x80000000u), d)); }
 YXI vf v_silu(vf x) { return vdiv(x, 1.f + v_expf(flt(bits(x) ^ 0x80000000u))); }
 YXI vf v_sigmoid(vf x) { return vdiv(vf(1.f), 1.f + v_expf(flt(bits(x) ^ 0x80000000u))); }
 YXI vf v_softplus(vf x) {
@@ -80,14 +167,21 @@ YXI vf v_softplus(vf x) {
 YXI vf v_i2f(simd<int64_t, 16> a) { return vf(a); }
 
 // FWHT of 512 values held as x[r] lane l = element 16 r + l; stage order h = 1, 2, ..., 256, (a + b, a - b) with a = lower index
+// FWHT of 512 values (x[r] lane l = element 16 r + l).  The four stages inside a register: every stage pairs the lanes that differ
+// in the lowest bit of the lane index (even lane a, odd lane b) and writes the 8 sums to the low half and the 8 differences to the
+// high half of the register.  That rotates the four bits of the lane index by one, so the next stage again finds its pairs in
+// (even, odd) lanes -- they are now the pairs of the next index bit -- and after four stages the lanes are back in place.  Per
+// element the same additions in the same order as the scalar code (bit 0, 1, 2, 3, then the registers).  Two 8-lane instructions
+// per register and stage; the earlier form (2-D selects) compiled into 16 scalar adds per register for the width-2 stage plus
+// packing moves (1528 instructions per transform, measured 2.1 us of a thread).
+YXI void v_fwht_lanes(vf& v) {
+  unroll<4>([&](auto) { const simd<float, 8> a = v.template select<8, 2>(0), b = v.template select<8, 2>(1); vf o;
+    o.template select<8, 1>(0) = a + b; o.template select<8, 1>(8) = a - b; v = o; });
+}
 YXI void v_fwht512(vf* x) {
-  unroll<32>([&](auto ri) { constexpr int r = decltype(ri)::value; vf& v = x[r];
-    { simd<float, 8> a = v.template select<8, 2>(0), b = v.template select<8, 2>(1); v.template select<8, 2>(0) = a + b; v.template select<8, 2>(1) = a - b; }
-    { auto m = v.template bit_cast_view<float, 4, 4>(); simd<float, 8> a = m.template select<4, 1, 2, 1>(0, 0), b = m.template select<4, 1, 2, 1>(0, 2);
-      m.template select<4, 1, 2, 1>(0, 0) = a + b; m.template select<4, 1, 2, 1>(0, 2) = a - b; }
-    { auto m = v.template bit_cast_view<float, 2, 8>(); simd<float, 8> a = m.template select<2, 1, 4, 1>(0, 0), b = m.template select<2, 1, 4, 1>(0, 4);
-      m.template select<2, 1, 4, 1>(0, 0) = a + b; m.template select<2, 1, 4, 1>(0, 4) = a - b; }
-    { simd<float, 8> a = v.template select<8, 1>(0), b = v.template select<8, 1>(8); v.template select<8, 1>(0) = a + b; v.template select<8, 1>(8) = a - b; } });
+  unroll<4>([&](auto) { unroll<32>([&](auto ri) { constexpr int r = decltype(ri)::value; vf& v = x[r];
+    const simd<float, 8> a = v.template select<8, 2>(0), b = v.template select<8, 2>(1); vf o;
+    o.template select<8, 1>(0) = a + b; o.template select<8, 1>(8) = a - b; v = o; }); });
   unroll<5>([&](auto si) { constexpr int d = 1 << decltype(si)::value;
     unroll<32>([&](auto pi) { constexpr int p = decltype(pi)::value;
       if constexpr (!(p & d)) { const vf a = x[p], b = x[p | d]; x[p] = a + b; x[p | d] = a - b; } }); });
@@ -101,21 +195,31 @@ YXI float v_xtree32(vf a, vf b) {
 }
 YXI float v_tree128(const vf* a) { return ((v_xtree32(a[0], a[1]) + v_xtree32(a[2], a[3])) + v_xtree32(a[4], a[5])) + v_xtree32(a[6], a[7]); }
 // a8 tail of one 512-block (x already multiplied by the input signs); writes alpha[tok * G + blk] and 512 int8 in the GEMM layout
-YXI float v_a8_tail(vf* x, int8_t* qx, float* alpha, int MR, int tok, int blk, int G) {
+// The tail in two parts: v_a8_pre changes x in place and has no division; v_a8_div only reads x, so it can be repeated with the
+// exact division policy when the fast one marked a lane.
+YXI vf v_a8_pre(vf* x) {
   v_fwht512(x);
   vf amax = 0.f;
   unroll<32>([&](auto ri) { constexpr int r = decltype(ri)::value; x[r] = v_rf16(x[r] * K512); amax = (max)(amax, flt(bits(x[r]) & 0x7fffffffu)); });
-  const vf al = vdiv(vf(hmax<float>(amax)), vf(127.f)); const vm pos = al > 0.f;
+  return amax;
+}
+template <class D> YXI float v_a8_div(const vf* x, vf amax, int8_t* qx, float* alpha, int MR, int tok, int blk, int G, D& d) {
+  const vf al = dv(d, vf(hmax<float>(amax)), vf(127.f)); const vm pos = al > 0.f;
   const float als = al[0]; alpha[tok * G + blk] = als;
   int8_t* qp = qx + ((size_t)(blk * 16) * MR + tok) * 32;
   unroll<16>([&](auto ci) { constexpr int c = decltype(ci)::value; simd<int8_t, 32> o;
     unroll<2>([&](auto hi) { constexpr int hh = decltype(hi)::value;
-      vf r = 0.f; r.merge(vdiv(x[2 * c + hh], al), pos);
+      vf r = 0.f; r.merge(dv(d, x[2 * c + hh], al), pos);
       vi q = rnde<float, 16>(r); q = (max)(q, vi(-127)); q = (min)(q, vi(127));
       o.template select<16, 1>(hh * 16) = simd<int8_t, 16>(q); });
     block_store<int8_t, 32>(qp + (size_t)c * MR * 32, o); });
   return als;
 }
+template <class D> YXI float v_a8_tail(vf* x, int8_t* qx, float* alpha, int MR, int tok, int blk, int G, D& d) { const vf amax = v_a8_pre(x); return v_a8_div(x, amax, qx, alpha, MR, tok, blk, G, d); }
+YXI float v_a8_tail(vf* x, int8_t* qx, float* alpha, int MR, int tok, int blk, int G) { DivIeee e; return v_a8_tail(x, qx, alpha, MR, tok, blk, G, e); }
+// fast division first; the exact one when a lane was marked (x is not changed by v_a8_div)
+template <int DM> YXI float v_a8_tail2(vf* x, int8_t* qx, float* alpha, int MR, int tok, int blk, int G) { const vf amax = v_a8_pre(x);
+  return run_div<DM>([&](auto& d) SYCL_ESIMD_FUNCTION { return v_a8_div(x, amax, qx, alpha, MR, tok, blk, G, d); }); }
 // Memory access in 256-byte pieces: a load or store costs a thread about 50 ns whatever its size, so 512 values go in 8 messages, not 32.
 // w512(p, f): f(r, v) for r = 0..31 with v = the 16 values at p + 16 r.   s512(p, f): stores f(r) for r = 0..31 to p + 16 r.
 template <int R> using rc = std::integral_constant<int, R>;
@@ -129,11 +233,12 @@ template <class T, class Fn> YXI void s512(T* p, Fn&& f) {
 YXI void v_load512(vf* x, const float* p) { w512<float>(p, [&](auto ri, vf v) { x[decltype(ri)::value] = v; }); }
 YXI void v_store512(float* p, const vf* x) { s512<float>(p, [&](auto ri) { return x[decltype(ri)::value]; }); }
 // RMS factor of a row (rfac of kern.hpp) as a broadcast vector
-YXI vf v_rfac(const float* S, float eps) {
+template <class D> YXI vf v_rfac(const float* S, float eps, D& d) {
   const vf sv = block_load<float, 16>(S); float s = 0.f;
   unroll<10>([&](auto bi) { const float t = sv[decltype(bi)::value]; s = s + t; });
-  return v_rsqrt(vdiv(vf(s), vf(5120.f)) + eps);
+  return v_rsqrt(dv(d, vf(s), vf(5120.f)) + eps, d);
 }
+YXI vf v_rfac(const float* S, float eps) { DivIeee e; return v_rfac(S, eps, e); }
 
 // ---------------------------------------------------------------------------------------------------------------------------
 // Kernels.  One ESIMD thread per (row, 512-block); the block lives in 32 registers.
@@ -187,7 +292,7 @@ inline void k_embed(sycl::queue& q, int M, const uint32_t* codes, const float* l
       block_store<float, 16>(h + (size_t)tok * H + b * 512 + r * 16, v_rbf((x[r] * K512) * block_load<float, 16>(sg + b * 512 + r * 16))); }); });
 }
 // residual add (acc may be null) + per-block sums of squares + quantised input of the next GEMM (+ its scales)
-inline void k_res_norm(sycl::queue& q, int M, int MR, float* h, float* S, float* alpha, int8_t* qx, uint16_t* xu, const int64_t* acc, const float* tau, const float* so,
+template <int DM> inline void k_res_norm_t(sycl::queue& q, int M, int MR, float* h, float* S, float* alpha, int8_t* qx, uint16_t* xu, const int64_t* acc, const float* tau, const float* so,
                        float* us, int32_t* Aw, const float* w, const float* sg_in) {
   q.parallel_for(sycl::nd_range<1>(M * 10, 10), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
     slm_init<256>();
@@ -209,9 +314,13 @@ inline void k_res_norm(sycl::queue& q, int M, int MR, float* h, float* S, float*
         uv.template select<16, 1>(16 * k) = simd<uint16_t, 16>(v_f2bf(u));
         x[r] = u * g1; });
       if (xu) block_store<uint16_t, 64>(xu + (size_t)tok * H + blk * 512 + 64 * q, uv); });
-    const float als = v_a8_tail(x, qx, alpha, MR, tok, blk, 10);
+    const float als = v_a8_tail2<DM>(x, qx, alpha, MR, tok, blk, 10);
     v_scales((uint32_t)it.get_local_id(0), 10, tok, M, MR, als, us, Aw); });
 }
+inline void k_res_norm(sycl::queue& q, int M, int MR, float* h, float* S, float* alpha, int8_t* qx, uint16_t* xu, const int64_t* acc, const float* tau, const float* so,
+                       float* us, int32_t* Aw, const float* w, const float* sg_in) {
+  if (g_div_mode == 0) k_res_norm_t<0>(q, M, MR, h, S, alpha, qx, xu, acc, tau, so, us, Aw, w, sg_in); else if (g_div_mode == 2) k_res_norm_t<2>(q, M, MR, h, S, alpha, qx, xu, acc, tau, so, us, Aw, w, sg_in);
+  else k_res_norm_t<1>(q, M, MR, h, S, alpha, qx, xu, acc, tau, so, us, Aw, w, sg_in); }
 // GDN, after the qkv / z GEMMs.  128 threads per row: 20 blocks of qkv -> mixed (bf16), 12 blocks of z -> z,
 // 96 a / b projections (-> ab, and from them beta and g).
 struct GdnPost { const int64_t *aq, *az; const float *tq, *tz, *sq, *sz, *us, *S, *wa, *wb, *A_log, *dt; const uint16_t* xn; uint16_t* mixed; float *z, *ab, *beta, *g; float eps; };
@@ -246,21 +355,26 @@ inline void k_gdn_post(sycl::queue& q, int M, const GdnPost P) {
       const vf gg = flt(bits(e) ^ 0x80000000u) * v_softplus(abv + P.dt[hd]); const float g0 = gg[0]; P.g[tok * 48 + hd] = g0; } });
 }
 // causal conv (4 taps over rows t-3..t, history for rows < 0) + silu; q / k slots are L2-normalised
-inline void k_conv(sycl::queue& q, int M, const uint16_t* mixed, const float* cw, const float* hist, float* Q, float* K, float* V) {
-  q.parallel_for(sycl::range<1>(M * 80), [=](sycl::id<1> it) SYCL_ESIMD_KERNEL { const int t = it[0] / 80, slot = it[0] % 80; vf act[8];
+template <int DM> inline void k_conv_t(sycl::queue& q, int M, const uint16_t* mixed, const float* cw, const float* hist, float* Q, float* K, float* V) {
+  q.parallel_for(sycl::range<1>(M * 80), [=](sycl::id<1> it) SYCL_ESIMD_KERNEL { const int t = it[0] / 80, slot = it[0] % 80;
+   run_div<DM>([&](auto& d) SYCL_ESIMD_FUNCTION { vf act[8];
     unroll<8>([&](auto qi) { constexpr int k8 = decltype(qi)::value; const int c = slot * 128 + 16 * k8;
       simd<float, 64> cv = block_load<float, 64>(cw + (size_t)c * 4); vf x[4];
       unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; const int r = t - 3 + k;
         if (r >= 0) x[k] = v_bf2f(block_load<uint16_t, 16>(mixed + (size_t)r * CV + c)); else x[k] = block_load<float, 16>(hist + (size_t)(r + 3) * CV + c); });
       const vf c0 = cv.template select<16, 4>(0), c1 = cv.template select<16, 4>(1), c2 = cv.template select<16, 4>(2), c3 = cv.template select<16, 4>(3);
       const vf acc = ((c0 * x[0] + c1 * x[1]) + c2 * x[2]) + c3 * x[3];
-      act[k8] = v_rbf(v_silu(v_rbf(acc))); });
+      act[k8] = v_rbf(acc); });
+    v_silu_n<8>(act, d);
+    unroll<8>([&](auto qi) { constexpr int k8 = decltype(qi)::value; act[k8] = v_rbf(act[k8]); });
     if (slot < 32) { vf sq[8]; unroll<8>([&](auto qi) { constexpr int k8 = decltype(qi)::value; sq[k8] = act[k8] * act[k8]; });
-      const vf rr = v_rsqrt(vf(v_tree128(sq) + 1e-6f));
+      const vf rr = v_rsqrt(vf(v_tree128(sq) + 1e-6f), d);
       if (slot < 16) unroll<8>([&](auto qi) { constexpr int k8 = decltype(qi)::value; block_store<float, 16>(Q + (size_t)t * 2048 + slot * 128 + k8 * 16, (act[k8] * rr) * 0.08838834764831845f); });
       else unroll<8>([&](auto qi) { constexpr int k8 = decltype(qi)::value; block_store<float, 16>(K + (size_t)t * 2048 + (slot - 16) * 128 + k8 * 16, act[k8] * rr); }); }
-    else unroll<8>([&](auto qi) { constexpr int k8 = decltype(qi)::value; block_store<float, 16>(V + (size_t)t * ZN + (slot - 32) * 128 + k8 * 16, act[k8]); }); });
+    else unroll<8>([&](auto qi) { constexpr int k8 = decltype(qi)::value; block_store<float, 16>(V + (size_t)t * ZN + (slot - 32) * 128 + k8 * 16, act[k8]); }); return 0.f; }); });      // the body may run twice: its inputs (mixed, hist, cw) are not written here
 }
+inline void k_conv(sycl::queue& q, int M, const uint16_t* mixed, const float* cw, const float* hist, float* Q, float* K, float* V) {
+  if (g_div_mode == 0) k_conv_t<0>(q, M, mixed, cw, hist, Q, K, V); else if (g_div_mode == 2) k_conv_t<2>(q, M, mixed, cw, hist, Q, K, V); else k_conv_t<1>(q, M, mixed, cw, hist, Q, K, V); }
 // State recurrence over the M rows: one thread per (head, 16 value columns j); the 128 key rows i are walked in order inside
 // each of the 4 chunks of 32.  Rows < n_commit update Sp in place; later rows continue in the scratch copy Ss.
 // Threads >= 384 (only when committing) roll the conv history: 20 blocks of 512 columns.
@@ -313,41 +427,51 @@ inline void k_state(sycl::queue& q, int M, int n_commit, const float* Q, const f
       if (tt + 1 == n_store) unroll<64>([&](auto ii) { constexpr int i = decltype(ii)::value; block_store<float, 16>(Sp + so + (size_t)(i0 + i) * 128, s[i]); }); } });
 }
 // per-head RMS norm of core, gate with silu(z), quantised input of out_proj (+ its scales)
-inline void k_gdn_out(sycl::queue& q, int M, int MR, const float* core, const float* z, const float* gw, const float* si, float eps, float* alpha, int8_t* qx, float* us, int32_t* Aw) {
+template <int DM> inline void k_gdn_out_t(sycl::queue& q, int M, int MR, const float* core, const float* z, const float* gw, const float* si, float eps, float* alpha, int8_t* qx, float* us, int32_t* Aw) {
   q.parallel_for(sycl::nd_range<1>(M * 12, 12), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
     slm_init<256>();
-    const int gid = (int)it.get_global_id(0), tok = gid / 12, blk = gid % 12; vf x[32]; v_load512(x, core + (size_t)tok * ZN + blk * 512);
+    const int gid = (int)it.get_global_id(0), tok = gid / 12, blk = gid % 12;
+    const float als = run_div<DM>([&](auto& d) SYCL_ESIMD_FUNCTION { vf x[32]; v_load512(x, core + (size_t)tok * ZN + blk * 512);
     simd<float, 64> gw0 = block_load<float, 64>(gw), gw1 = block_load<float, 64>(gw + 64);
     unroll<4>([&](auto hi) { constexpr int hd = decltype(hi)::value; vf sq[8];
       unroll<8>([&](auto qi) { constexpr int k8 = decltype(qi)::value; sq[k8] = x[hd * 8 + k8] * x[hd * 8 + k8]; });
-      const vf rh = v_rsqrt(vdiv(vf(v_tree128(sq)), vf(128.f)) + eps);
+      const vf rh = v_rsqrt(dv(d, vf(v_tree128(sq)), vf(128.f)) + eps, d);
       unroll<2>([&](auto pi) { constexpr int p = decltype(pi)::value;
         simd<float, 64> zv = block_load<float, 64>(z + (size_t)tok * ZN + blk * 512 + (hd * 8 + p * 4) * 16), sv = block_load<float, 64>(si + blk * 512 + (hd * 8 + p * 4) * 16);
+        vf zs[4]; unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; zs[k] = zv.template select<16, 1>(16 * k); });
+        v_silu_n<4>(zs, d);
         unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; constexpr int k8 = p * 4 + k, r = hd * 8 + k8;
           vf g1; if constexpr (p == 0) g1 = gw0.template select<16, 1>(16 * k); else g1 = gw1.template select<16, 1>(16 * k);
-          const vf z1 = zv.template select<16, 1>(16 * k), s1 = sv.template select<16, 1>(16 * k);
+          const vf s1 = sv.template select<16, 1>(16 * k);
           const vf n2 = v_rbf(g1 * v_rbf(x[r] * rh));
-          x[r] = v_rbf(n2 * v_silu(z1)) * s1; }); }); });
-    const float als = v_a8_tail(x, qx, alpha, MR, tok, blk, 12);
+          x[r] = v_rbf(n2 * zs[k]) * s1; }); }); });
+      return v_a8_tail(x, qx, alpha, MR, tok, blk, 12, d); });      // the body may run twice: its inputs (core, z) are not written here
     v_scales((uint32_t)it.get_local_id(0), 12, tok, M, MR, als, us, Aw); });
 }
+inline void k_gdn_out(sycl::queue& q, int M, int MR, const float* core, const float* z, const float* gw, const float* si, float eps, float* alpha, int8_t* qx, float* us, int32_t* Aw) {
+  if (g_div_mode == 0) k_gdn_out_t<0>(q, M, MR, core, z, gw, si, eps, alpha, qx, us, Aw); else if (g_div_mode == 2) k_gdn_out_t<2>(q, M, MR, core, z, gw, si, eps, alpha, qx, us, Aw);
+  else k_gdn_out_t<1>(q, M, MR, core, z, gw, si, eps, alpha, qx, us, Aw); }
 // MLP after the gate / up GEMMs: silu(gate) * up -> quantised input of down_proj (+ its scales)
 struct MlpPost { const int64_t *ag, *au; const float *tg, *tu, *sg, *su, *si, *S; float *us, *alpha; int8_t* qx; int32_t* Aw; float eps; };
-inline void k_mlp_post(sycl::queue& q, int M, int MR, const MlpPost P) {
+template <int DM> inline void k_mlp_post_t(sycl::queue& q, int M, int MR, const MlpPost P) {
   q.parallel_for(sycl::nd_range<1>(M * 34, 34), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
     slm_init<256>();
     const int gid = (int)it.get_global_id(0), tok = gid / 34, blk = gid % 34; const size_t n0 = (size_t)tok * F + blk * 512;
-    const vf rf = v_rfac(P.S + tok * SST, P.eps), u0 = P.us[tok]; vf x[32], y[32];
+    const float als = run_div<DM>([&](auto& d) SYCL_ESIMD_FUNCTION { const vf rf = v_rfac(P.S + tok * SST, P.eps, d), u0 = P.us[tok]; vf x[32], y[32];
     v_yrot_n(y, P.au + n0, P.tu + blk * 512, u0, rf); v_fwht512(y);
     w512<float>(P.su + blk * 512, [&](auto ri, vf s1) { constexpr int r = decltype(ri)::value; y[r] = v_rbf((y[r] * K512) * s1); });
     v_yrot_n(x, P.ag + n0, P.tg + blk * 512, u0, rf); v_fwht512(x);
     unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; simd<float, 64> gv = block_load<float, 64>(P.sg + blk * 512 + 64 * q), iv = block_load<float, 64>(P.si + blk * 512 + 64 * q);
-      unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; constexpr int r = 4 * q + k; const vf g1 = gv.template select<16, 1>(16 * k), i1 = iv.template select<16, 1>(16 * k);
-        const vf g = v_rbf((x[r] * K512) * g1);
-        x[r] = v_rbf(v_rbf(v_silu(g)) * y[r]) * i1; }); });
-    const float als = v_a8_tail(x, P.qx, P.alpha, MR, tok, blk, 34);
+      unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; constexpr int r = 4 * q + k; const vf g1 = gv.template select<16, 1>(16 * k);
+        x[r] = v_rbf((x[r] * K512) * g1); });
+      v_silu_n<4>(x + 4 * q, d);
+      unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; constexpr int r = 4 * q + k; const vf i1 = iv.template select<16, 1>(16 * k);
+        x[r] = v_rbf(v_rbf(x[r]) * y[r]) * i1; }); });
+      return v_a8_tail(x, P.qx, P.alpha, MR, tok, blk, 34, d); });      // the body may run twice: us[tok] is rewritten only after the barrier of v_scales
     v_scales((uint32_t)it.get_local_id(0), 34, tok, M, MR, als, P.us, P.Aw); });
 }
+inline void k_mlp_post(sycl::queue& q, int M, int MR, const MlpPost P) {
+  if (g_div_mode == 0) k_mlp_post_t<0>(q, M, MR, P); else if (g_div_mode == 2) k_mlp_post_t<2>(q, M, MR, P); else k_mlp_post_t<1>(q, M, MR, P); }
 // true if the device contracts a * b + c into a fused multiply-add inside ESIMD kernels (it must not: build.sh passes
 // -Xsycl-target-backend "-ffp-contract=off"; without it results are off by one ulp here and there)
 inline bool esimd_contracts(sycl::queue& q) {

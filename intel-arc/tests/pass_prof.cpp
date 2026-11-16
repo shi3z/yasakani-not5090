@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <algorithm>
 #include <map>
 #include <memory>
 using namespace yx;
@@ -26,7 +27,18 @@ int main(int argc, char** argv) {
   std::vector<int> ids(512); int am[16];
   { const int B = E.cap; for (; pos + B <= ctx; pos += B) { for (int i = 0; i < B; ++i) ids[i] = base[(pos + i) % 12]; E.q.memcpy(E.ids, ids.data(), B * 4).wait(); pass(B, true); } }     // context with the prefill batch
   E.q.wait(); std::printf("context %d\n", pos);
-  for (int M : {1, 8, 16, 32, 64, 128, 256, 512}) { if (M > E.cap) break; for (int i = 0; i < M; ++i) ids[i] = base[i % 12]; E.q.memcpy(E.ids, ids.data(), M * 4).wait();
+  const int only = getenv("YX_PP_M") ? atoi(getenv("YX_PP_M")) : 0;          // YX_PP_M=256: only this row count
+  // YX_PP_ATTN="0,1,2,...": for the row count YX_PP_M, time the attention stage of a pass with each attention experiment (median of 5, with waits)
+  if (getenv("YX_PP_ATTN") && only) { const int M = only; for (int i = 0; i < M; ++i) ids[i] = base[i % 12]; E.q.memcpy(E.ids, ids.data(), M * 4).wait();
+    std::string lst = getenv("YX_PP_ATTN"); size_t a0 = 0;
+    while (a0 < lst.size()) { size_t a1 = lst.find(',', a0); if (a1 == std::string::npos) a1 = lst.size(); g_attn_mode = atoi(lst.substr(a0, a1 - a0).c_str()); a0 = a1 + 1;
+      std::vector<double> ts, tk, tp; for (int r = 0; r < 6; ++r) { E.prof = true; E.T.clear(); E.mark(nullptr); const double f0 = now(); pass(M, false); E.q.wait(); const double f1 = now(); E.prof = false;
+        double t = 0; for (auto& kv : E.T) if (kv.first.find("scores") != std::string::npos || kv.first.find("values") != std::string::npos || kv.first.find("fused") != std::string::npos) t += kv.second;
+        if (r) { ts.push_back(t); tp.push_back(f1 - f0); } }
+      std::sort(ts.begin(), ts.end()); std::sort(tp.begin(), tp.end());
+      std::printf("attention experiment %2d  context %6d  rows %d:  scores + values of 16 layers %8.2f ms (median of 5; min %.2f, max %.2f)   whole pass with waits %.1f ms\n", g_attn_mode, pos, M, ts[2], ts[0], ts[4], tp[2]); std::fflush(stdout); }
+    return 0; }
+  for (int M : {1, 8, 16, 32, 64, 128, 256, 512}) { if (M > E.cap) break; if (only && M != only) continue; for (int i = 0; i < M; ++i) ids[i] = base[i % 12]; E.q.memcpy(E.ids, ids.data(), M * 4).wait();
     double best = 1e9, bh = 1e9;
     for (int r = 0; r < 6; ++r) { double t0 = now(); pass(M, false); E.q.wait(); double t1 = now(); if (M <= 16) hd.run(E, M, 0, M, am); double t2 = now(); best = std::min(best, t1 - t0); bh = std::min(bh, t2 - t1); }
     prof = true; T.clear(); pass(M, false); prof = false;
