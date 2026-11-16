@@ -644,3 +644,54 @@ Both models: `dec_check` (tokens, positions, state hashes; greedy, sampling, pre
 and identical with look-ahead off; `pf_check` states identical to the build before this round with the automatic batch and with
 batch 16. Self-check: speed 3/3, quality 2/3 (the known near-tie in the thinking case). Automatic batch unchanged: speed 256 (22.19 GB
 allocated), quality 128 (21.79 GB).
+
+## Cache write, GDN post, int8 tail (November 16, second part; strict mode only)
+
+Speed model, context 65,536; GPU exclusive (one job under the lock, no other B60 job running). Start: bench 84.2 tok/s, 8-row pass 55.0 ms.
+
+**How a small kernel spends its time (new measurements, real pass data: `YX_PP_CUT=1 YX_PP_M=8 tests/pass_prof 256 65536`).**
+res_norm, one thread, cumulative (us; the empty launch is 2.6 and hides anything shorter): acc + tau loads and conversion 2.8, + FWHT
+2.9, + h and scale loads, residual add, store 5.1, + sum of squares 5.4, + weight / sign loads, bf16 store 6.7, + a8 FWHT, fp16
+rounding, maximum 8.5, + 33 div_ieee and 16 int8 stores 12.1, + scales 12.0. A thread waits about 0.2 us for a block load it issues
+and then needs (GDN projection: 160 loads in turn = 30 us), so the number of loads a thread issues IN TURN sets its latency.
+
+1. **Cache write (`ak::select5`, default for packed models; `YX_SEL=0` = scalar kernel, `YX_SEL=2` = run both and compare every
+   buffer).** The scalar SYCL kernel had one work-item per (row, group): 64 work-items at 8 rows = 2 SIMD32 threads walking 256
+   elements each with gathers and scatters (1732 instructions, 19 spill stores, 21 gathers, 5 scatters, 235 branches). Per
+   (row, group) it reads 72 error sums, 256 states and 4 scale values and writes 160 bytes of packed row, one scale and 512 bytes
+   of mirror (K: 128 uint32 in 128 different cache lines; V: 256 uint16 in 16 blocks of 64 bytes). New: one ESIMD thread per (row,
+   group, chain of 64 values): the 64 fields of a chain are exactly 10 words of the row (16 x 5 bits -> 8 x 10 -> 4 x 20 -> 2 x 40),
+   the mirror state of an element is ((f[e-1] & 7) << 5) | f[e] so a chain needs no serial walk, 4 table gathers, 4 scatters (K:
+   8 x uint32, V: 16 x uint16). 446 instructions, no spills. Layout, values and the set of bytes written are unchanged: check mode
+   over 16 layers x (256-row launches up to position 3,000, 8- and 16-row launches): 0 mismatches in packed K / V, scales, K / V
+   mirrors (the first version had the K-mirror stride wrong and the check found it). 1.62 -> 0.72 ms per pass (with waits);
+   bench 84.2 -> 85.3. Not fused with the trellis kernel (it needs the errors of all 9 scales of a row).
+2. **GDN post (`k_gdn_post`; `YX_GPOST=1` = old layout).** The time is in the 96 a / b projections (a dot product of 5120 with a
+   prescribed order of additions), not in the FWHT threads. Old: one thread per (row, projection), 160 block loads in turn: 33 us
+   per launch for one row, 38 for 8, 65 for 16 rows (2048 threads). New: work-groups of 8, thread k computes the partial sums a[k]
+   (20, then 15 loads with 256-byte input loads), the 8 leave them in SLM, one barrier, thread 0 finishes. Per pass (with waits):
+   1 row 1.60 -> 0.83 ms, 8 rows 1.81 -> 1.44, 16 rows 3.13 -> 2.36. bench 84.2 -> 84.9 alone.
+   REJECTED: one thread for 4 rows of a projection (weight row read once): 400 loads in turn, 4.16 ms per pass at 8 and 16 rows.
+3. **Loads of the next step issued early in the int64 conversion (`v_yrot_steps`; `-DYX_NOPIPE` = old).** MLP post 3.12 -> 2.89 ms
+   per pass, pass 53.8 -> 53.6: small, kept.
+4. **int8 tail, strict (not adopted).** On real data the 33 div_ieee + stores cost 3.6 us of a res_norm thread; with the native
+   divide 0.5, with `DivFast` 2.4 (and 3.5 when the repeat-with-div_ieee branch is present), with no int8 output 0.0.
+   Tried: `v_a8_cert` (`-DYX_A8_CERT`): k = rnde(x * (1 / al)) accepted when fma(-(k + 0.49998), al, x) < 0 < fma(-(k - 0.49998), al,
+   x), which proves rnde(fl(x / al)) = k without trusting the native operations; otherwise the div_ieee loop. 4.7 us: slower than
+   strict. The inputs are fp16 values and the scale is their maximum / 127, so quotients that are half-integers up to rounding
+   are common and the fallback runs often (rate not measured). An exact tie-break without division (residual against the half-
+   integer, ulp comparison, parity) is the open idea; its gain is bounded by 3 us x 240 launches = 0.7 ms per pass.
+
+Together (1 + 2 + 3): 8-row pass 55.0 -> 53.6 ms.
+
+Draft model per round (`YX_DPROF=2`, with waits): block pass 4.9 ms + its head 0.85 + select 0.16, context pass 3.2 to 3.9 ms; per
+draft step GEMM 4.1, norm 0.35, score 0.34, qkv 0.31, dyn 0.22, hist 0.18, glu 0.17, a8att 0.16, rescore 0.14. Not changed.
+
+ISA (static): select scalar 1732 instructions (SIMD32, 19 spill stores) -> select5 446 (no spills, 7 block loads, 6 gathers, 10
+scatters); GDN post 4370 -> 3974 (83 block loads over both roles, 2 SLM loads, 1 SLM store, 1 barrier).
+
+**Checks of the build with 1 + 2 + 3** (both models): `dec_check` (tokens, positions, state hashes; greedy, sampling, prefix reuse)
+identical to the reference build, also with look-ahead off; `pf_check` states (packed KV, mirrors, DeltaNet) identical; self-check
+speed 3/3, quality 2/3 (the known near-tie). Results, 3 runs per prompt: speed 84.2 -> 86.3 tok/s (explain 66.5, code 118.1, story
+41.8, proof 118.7), quality 78.2 -> 80.0; speed model after an 8K / 30K / 60K prompt 50.8 / 40.3 / 35.9 tok/s (pass 67.9 / 77.1 /
+91.0 ms), prompt reading 566 / 501 / 432 tok/s. 90 tok/s is not reached.

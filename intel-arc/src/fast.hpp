@@ -216,9 +216,42 @@ template <class D> YXI float v_a8_div(const vf* x, vf amax, int8_t* qx, float* a
   return als;
 }
 template <class D> YXI float v_a8_tail(vf* x, int8_t* qx, float* alpha, int MR, int tok, int blk, int G, D& d) { const vf amax = v_a8_pre(x); return v_a8_div(x, amax, qx, alpha, MR, tok, blk, G, d); }
+// Strict int8 output without 32 div_ieee.  Only the INTEGER q = rnde(fl(x / al)) is needed, so: y = x * (1 / al) with the native
+// inverse, k = rnde(y), and k is accepted when the exact comparisons  k - 0.49998 < x / al < k + 0.49998  hold.  They are evaluated
+// as the signs of fma(-c, al, x) (one rounding of the exact x - c al: the sign is exact), so the proof does not rely on the accuracy
+// of the native operations.  Then fl(x / al) lies strictly between k - 0.5 and k + 0.5 (rounding is monotonic and both bounds are
+// more than half an ulp away from the half-integers for |k| <= 128), hence rnde(fl(x / al)) = k.  A lane within 2e-5 of a
+// half-integer is not accepted (about 4e-5 of the lanes); then, or when the scale is not an ordinary positive number, the thread
+// runs the div_ieee loop (v_a8_div does not change x).  The scale itself is one div_ieee as before.
+// NOT USED (build with -DYX_A8_CERT to try): on real data it is slower than the 32 div_ieee (res_norm thread 13.1 us against 12.1):
+// the inputs are fp16 values and the scale is their maximum / 127, so quotients that are exact half-integers up to rounding are
+// common and the fallback runs often.
+#ifdef YX_A8_CERT
+YXI float v_a8_cert(const vf* x, vf amax, int8_t* qx, float* alpha, int MR, int tok, int blk, int G) { namespace ex = sycl::ext::intel::experimental::esimd;
+  const vf al = div_ieee<float, 16>(vf(hmax<float>(amax)), vf(127.f)); const float als = al[0]; alpha[tok * G + blk] = als;
+  int8_t* qp = qx + ((size_t)(blk * 16) * MR + tok) * 32;
+  vu bad = 0u;
+  if (als >= 1e-30f && als <= 1e30f) { const vf ral = vf(1.f) / al, nal = flt(bits(al) ^ 0x80000000u);
+    unroll<16>([&](auto ci) { constexpr int c = decltype(ci)::value; simd<int8_t, 32> o;
+      unroll<2>([&](auto hi) { constexpr int hh = decltype(hi)::value; const vf xv = x[2 * c + hh];
+        const vf k = rnde<float, 16>(xv * ral); const vf rh = ex::fma(nal, k + 0.49998f, xv), rl = ex::fma(nal, k - 0.49998f, xv);
+        bad.merge(vu(1u), !((rh < 0.f) & (rl > 0.f)));
+        vi q = k; q = (max)(q, vi(-127)); q = (min)(q, vi(127));
+        o.template select<16, 1>(hh * 16) = simd<int8_t, 16>(q); });
+      block_store<int8_t, 32>(qp + (size_t)c * MR * 32, o); });
+    if (!(bad != 0u).any()) return als; }
+  DivIeee e; return v_a8_div(x, amax, qx, alpha, MR, tok, blk, G, e);
+}
+YXI float v_a8_tail(vf* x, int8_t* qx, float* alpha, int MR, int tok, int blk, int G) { const vf amax = v_a8_pre(x); return v_a8_cert(x, amax, qx, alpha, MR, tok, blk, G); }
+YXI float v_a8_tail(vf* x, int8_t* qx, float* alpha, int MR, int tok, int blk, int G, DivIeee&) { const vf amax = v_a8_pre(x); return v_a8_cert(x, amax, qx, alpha, MR, tok, blk, G); }
+#else
 YXI float v_a8_tail(vf* x, int8_t* qx, float* alpha, int MR, int tok, int blk, int G) { DivIeee e; return v_a8_tail(x, qx, alpha, MR, tok, blk, G, e); }
+#endif
 // fast division first; the exact one when a lane was marked (x is not changed by v_a8_div)
 template <int DM> YXI float v_a8_tail2(vf* x, int8_t* qx, float* alpha, int MR, int tok, int blk, int G) { const vf amax = v_a8_pre(x);
+#ifdef YX_A8_CERT
+  if constexpr (DM == 0) return v_a8_cert(x, amax, qx, alpha, MR, tok, blk, G);
+#endif
   return run_div<DM>([&](auto& d) SYCL_ESIMD_FUNCTION { return v_a8_div(x, amax, qx, alpha, MR, tok, blk, G, d); }); }
 // Memory access in 256-byte pieces: a load or store costs a thread about 50 ns whatever its size, so 512 values go in 8 messages, not 32.
 // w512(p, f): f(r, v) for r = 0..31 with v = the 16 values at p + 16 r.   s512(p, f): stores f(r) for r = 0..31 to p + 16 r.
@@ -258,19 +291,30 @@ YXI void v_scales(uint32_t lid, int G, int tok, int M, int MR, float als, float*
     if (16 * o < G) { const vi w = rnde<float, 16>(a[o] * rm); scatter<int32_t, 16>(Aw + tok * G + 16 * o, vu(0, 4), w, vi(0, 1) < (G - 16 * o)); } });
   if (tok == M - 1) for (int i = M * G; i < MR * G; ++i) Aw[i] = 0;
 }
-// (float)acc * us [* r] * tau of one 512-block
-YXI void v_yrot(vf* x, const int64_t* acc, const float* tau, vf us) {
+// (float)acc * us [* r] * tau of one 512-block.  The loads of step q + 1 are issued before step q is computed: a thread waits
+// about 0.2 us for a block load whose result it needs next, and loads that are already on their way overlap that wait.
+#ifndef YX_NOPIPE
+template <class Fn> YXI void v_yrot_steps(const int64_t* acc, const float* tau, Fn&& f) {
+  simd<float, 64> tv[2]; simd<int64_t, 32> av[2][2];
+  tv[0] = block_load<float, 64>(tau); av[0][0] = block_load<int64_t, 32>(acc); av[0][1] = block_load<int64_t, 32>(acc + 32);
+  unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; constexpr int c = q & 1, n = c ^ 1;
+    if constexpr (q + 1 < 8) { tv[n] = block_load<float, 64>(tau + 64 * (q + 1)); av[n][0] = block_load<int64_t, 32>(acc + 64 * (q + 1)); av[n][1] = block_load<int64_t, 32>(acc + 64 * (q + 1) + 32); }
+    unroll<2>([&](auto pi) { constexpr int p = decltype(pi)::value;
+      unroll<2>([&](auto ki) { constexpr int k = decltype(ki)::value; constexpr int r = 4 * q + 2 * p + k;
+        const simd<int64_t, 16> a1 = av[c][p].template select<16, 1>(16 * k); const vf t1 = tv[c].template select<16, 1>(16 * (2 * p + k));
+        f(rc<r>{}, v_i2f(a1), t1); }); }); });
+}
+#else
+template <class Fn> YXI void v_yrot_steps(const int64_t* acc, const float* tau, Fn&& f) {
   unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; simd<float, 64> tv = block_load<float, 64>(tau + 64 * q);
     unroll<2>([&](auto pi) { constexpr int p = decltype(pi)::value; simd<int64_t, 32> av = block_load<int64_t, 32>(acc + 64 * q + 32 * p);
       unroll<2>([&](auto ki) { constexpr int k = decltype(ki)::value; constexpr int r = 4 * q + 2 * p + k;
         const simd<int64_t, 16> a1 = av.template select<16, 1>(16 * k); const vf t1 = tv.template select<16, 1>(16 * (2 * p + k));
-        x[r] = (v_i2f(a1) * us) * t1; }); }); }); }
-YXI void v_yrot_n(vf* x, const int64_t* acc, const float* tau, vf us, vf rf) {
-  unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; simd<float, 64> tv = block_load<float, 64>(tau + 64 * q);
-    unroll<2>([&](auto pi) { constexpr int p = decltype(pi)::value; simd<int64_t, 32> av = block_load<int64_t, 32>(acc + 64 * q + 32 * p);
-      unroll<2>([&](auto ki) { constexpr int k = decltype(ki)::value; constexpr int r = 4 * q + 2 * p + k;
-        const simd<int64_t, 16> a1 = av.template select<16, 1>(16 * k); const vf t1 = tv.template select<16, 1>(16 * (2 * p + k));
-        x[r] = ((v_i2f(a1) * us) * rf) * t1; }); }); }); }
+        f(rc<r>{}, v_i2f(a1), t1); }); }); });
+}
+#endif
+YXI void v_yrot(vf* x, const int64_t* acc, const float* tau, vf us) { v_yrot_steps(acc, tau, [&](auto ri, vf a, vf t1) { x[decltype(ri)::value] = (a * us) * t1; }); }
+YXI void v_yrot_n(vf* x, const int64_t* acc, const float* tau, vf us, vf rf) { v_yrot_steps(acc, tau, [&](auto ri, vf a, vf t1) { x[decltype(ri)::value] = ((a * us) * rf) * t1; }); }
 
 // embedding rows -> h
 inline void k_embed(sycl::queue& q, int M, const uint32_t* codes, const float* lut, const float* sc, const float* sg, float* h, const int* ids) {
@@ -324,7 +368,54 @@ inline void k_res_norm(sycl::queue& q, int M, int MR, float* h, float* S, float*
 // GDN, after the qkv / z GEMMs.  128 threads per row: 20 blocks of qkv -> mixed (bf16), 12 blocks of z -> z,
 // 96 a / b projections (-> ab, and from them beta and g).
 struct GdnPost { const int64_t *aq, *az; const float *tq, *tz, *sq, *sz, *us, *S, *wa, *wb, *A_log, *dt; const uint16_t* xn; uint16_t* mixed; float *z, *ab, *beta, *g; float eps; };
+// Thread layout (work-groups of 8): per row 4 groups of rotation threads (20 blocks of qkv, 12 of z; they use no barrier), then one
+// group per projection: thread k computes the 16 partial sums a[k] of the scalar code (40 products each, in its order) with 20
+// block loads, the 8 threads leave them in SLM and thread 0 adds them (tree128) and finishes.  Why: a thread waits about 0.2 us
+// for every block load it issues in turn, so one thread per projection (160 loads) took 30 us whatever the row count.  Tried and
+// rejected: one thread for 4 rows of a projection (weight row read once, 400 loads in turn): 4.16 ms per pass against 1.81 / 3.13
+// at 8 / 16 rows.  YX_GPOST=1 selects the old layout (one thread per row and projection).
+inline void k_gdn_post_rows(sycl::queue& q, int M, const GdnPost P);
 inline void k_gdn_post(sycl::queue& q, int M, const GdnPost P) {
+  static const bool old_layout = std::getenv("YX_GPOST") && atoi(std::getenv("YX_GPOST")) == 1;
+  if (old_layout) { k_gdn_post_rows(q, M, P); return; }
+  const int NRG = M * 4;                                                                   // rotation groups
+  q.parallel_for(sycl::nd_range<1>((size_t)(NRG + M * 96) * 8, 8), [=](sycl::nd_item<1> ndi) SYCL_ESIMD_KERNEL {
+    slm_init<512>();
+    const int wg = (int)ndi.get_group(0), lid = (int)ndi.get_local_id(0);
+    if (wg < NRG) { const int tok = wg >> 2, b = (wg & 3) * 8 + lid; vf x[32]; const vf rf = v_rfac(P.S + tok * SST, P.eps);
+      if (b < 20) { v_yrot_n(x, P.aq + (size_t)tok * CV + b * 512, P.tq + b * 512, vf(P.us[tok]), rf); v_fwht512(x);
+        unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; simd<float, 64> sv = block_load<float, 64>(P.sq + b * 512 + 64 * q); simd<uint16_t, 64> ov;
+          unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; const vf s1 = sv.template select<16, 1>(16 * k);
+            ov.template select<16, 1>(16 * k) = simd<uint16_t, 16>(v_f2bf((x[4 * q + k] * K512) * s1)); });
+          block_store<uint16_t, 64>(P.mixed + (size_t)tok * CV + b * 512 + 64 * q, ov); }); }
+      else { const int bb = b - 20; v_yrot_n(x, P.az + (size_t)tok * ZN + bb * 512, P.tz + bb * 512, vf(P.us[tok]), rf); v_fwht512(x);
+        unroll<8>([&](auto qi) { constexpr int q = decltype(qi)::value; simd<float, 64> sv = block_load<float, 64>(P.sz + bb * 512 + 64 * q); simd<float, 64> ov;
+          unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; const vf s1 = sv.template select<16, 1>(16 * k);
+            ov.template select<16, 1>(16 * k) = v_rbf((x[4 * q + k] * K512) * s1); });
+          block_store<float, 64>(P.z + (size_t)tok * ZN + bb * 512 + 64 * q, ov); }); }
+      return; }
+    const int pid = wg - NRG, tok = pid / 96, r = pid % 96;
+    const float* W = r < 48 ? P.wb + (size_t)r * H : P.wa + (size_t)(r - 48) * H; const uint16_t* X = P.xn + (size_t)tok * H;
+    vf a = 0.f;
+    unroll<5>([&](auto ji) { constexpr int j = decltype(ji)::value; const int i0 = 8 * (16 * lid + 128 * j);
+      simd<float, 128> wv; simd<uint32_t, 64> xw = block_load<uint32_t, 64>((const uint32_t*)(X + i0));      // 128 bf16 values in one 256-byte load
+      unroll<2>([&](auto pi) { constexpr int p = decltype(pi)::value; wv.template select<64, 1>(64 * p) = block_load<float, 64>(W + i0 + 64 * p); });
+      auto xv = xw.template bit_cast_view<uint16_t>();
+      unroll<8>([&](auto ki) { constexpr int k = decltype(ki)::value;
+        const vf wk = wv.template select<16, 8>(k); const simd<uint16_t, 16> xk = xv.template select<16, 8>(k);
+        a = a + wk * v_bf2f(xk); }); });
+    slm_block_store<float, 16>(lid * 64, a);
+    barrier();
+    if (lid != 0) return;
+    simd<float, 128> av; av.template select<64, 1>(0) = slm_block_load<float, 64>(0); av.template select<64, 1>(64) = slm_block_load<float, 64>(256);
+    vf a8[8]; unroll<8>([&](auto ki) { constexpr int k = decltype(ki)::value; a8[k] = av.template select<16, 1>(16 * k); });
+    const vf rf = v_rfac(P.S + tok * SST, P.eps);
+    const vf abv = v_rbf(vf(v_tree128(a8)) * rf); const float ab0 = abv[0]; P.ab[tok * 96 + r] = ab0;
+    if (r < 48) { const vf bt = v_rbf(v_sigmoid(abv)); const float b0 = bt[0]; P.beta[tok * 48 + r] = b0; }
+    else { const int hd = r - 48; const vf e = v_expf(vf(P.A_log[hd]));
+      const vf gg = flt(bits(e) ^ 0x80000000u) * v_softplus(abv + P.dt[hd]); const float g0 = gg[0]; P.g[tok * 48 + hd] = g0; } });
+}
+inline void k_gdn_post_rows(sycl::queue& q, int M, const GdnPost P) {
   q.parallel_for(sycl::range<1>(M * 128), [=](sycl::id<1> it) SYCL_ESIMD_KERNEL { const int tok = it[0] >> 7, b = it[0] & 127;
     const vf rf = v_rfac(P.S + tok * SST, P.eps);
     if (b < 32) { vf x[32];

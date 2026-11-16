@@ -41,9 +41,9 @@ With speculative decoding off the B60 generates 18.6 (fastest) and 17.7 (quality
 8 rows and 72 ms with 16; the engine verifies 16 drafted tokens when the expected extra accepted tokens pay for the 12 % (`YX_BLK16=2`
 selects the upstream rule, `0` / `1` force 8 / 16 rows). The generated tokens and the engine state do not depend on that choice
 (`tests/dec_check.py`).
-Since November 16 (same arithmetic, same outputs): 84.2 / 78.2 tokens per second with thinking off (fastest / quality), 67.1 / 66.1
-with thinking on, prompts read at 564 / 499 / 431 and 495 / 444 / 389 tokens per second at 8,000 / 30,000 / 60,000 tokens (the tables
-above are the measurements of November 15). Options, off by default: `YX_DIV=2` uses the native divide in four kernels (2 to 3 %
+Since November 16 (same arithmetic, same outputs): 86.3 / 80.0 tokens per second with thinking off (fastest / quality); the fastest
+model reads prompts at 566 / 501 / 432 tokens per second at 8,000 / 30,000 / 60,000 tokens and generates 50.8 / 40.3 / 35.9 after them
+(the tables above are the measurements of November 15; thinking on was last measured at 67.1 / 66.1, before the latest changes). Options, off by default: `YX_DIV=2` uses the native divide in four kernels (2 to 3 %
 faster per pass; the outputs are no longer bit-identical and the text can differ), `YX_ATTN_FA=1..11` selects fused-attention
 experiments (all slower than the default). `tools/isa_report.py` tabulates an IGC assembly dump per kernel.
 `PORT_NOTES.md` has the measurements behind these numbers and the approaches that did not work; raw outputs are in `bench/`.

@@ -305,6 +305,50 @@ inline void viterbi(sycl::queue& Q, const Args P) {
       const vf d = block_load<float, 16>(r + 16 * k) - gather<float, 16>(cdec, st << 2) * sv; dd[k] = d * d; });
     float* eo = P.enc_e + ((size_t)tg * A_NM + mi) * 8 + ch * 2; eo[0] = v_xtree32(dd[0], dd[1]); eo[1] = v_xtree32(dd[2], dd[3]); });
 }
+// 3. cache write for packed streams (K always; V when the model packs it: no guard rows, no low-rank part): one thread per
+// (row, group, chain of 64 values).  The scalar kernel it replaces ran one work-item per (row, group): 64 work-items for 8 rows,
+// i.e. two or three SIMD32 threads walking 256 elements each.  Here every chain is independent:
+//   - the best of the A_NM scales: error sums in the order of the scalar code (t = e0 + e1 + ... + e7 per scale, first minimum)
+//   - the 64 5-bit fields of the chain are exactly 10 words of the packed row (320 bits), most significant bit first
+//   - mirror value of element e: decode table at state ((f[e-1] & 7) << 5) | f[e]  (the 8-bit window of the scalar code; 0 before
+//     the first element of a chain), high half of the float; K tile: one uint32 per pair of dims, V tile: one uint16 per dim
+// Layout, values and the set of bytes written are those of the scalar kernel (rows of one launch never share a word).
+inline void select5(sycl::queue& Q, const Args P) {
+  Q.parallel_for(sycl::range<1>(P.M * 32), [=](sycl::id<1> it) SYCL_ESIMD_KERNEL { const int ch = it[0] & 3, tg = (int)(it[0] >> 2), tok = tg >> 3, g8 = tg & 7, kind = g8 >> 2, kvh = g8 & 3;
+    const size_t row = (size_t)kvh * P.max_ctx + P.pos0 + tok; const float* ec = P.enc_c + tg * 4; const float* ee = P.enc_e + (size_t)tg * A_NM * 8;
+    // error of every scale: 8 partial errors each, added in index order
+    simd<float, 64> e0 = block_load<float, 64>(ee); simd<float, 8> e8 = block_load<float, 8>(ee + 64);
+    simd<float, 8> tv = e0.template select<8, 8>(0); unroll<7>([&](auto wi) { constexpr int w = decltype(wi)::value + 1; tv = tv + e0.template select<8, 8>(w); });
+    float t8 = e8[0]; unroll<7>([&](auto wi) { constexpr int w = decltype(wi)::value + 1; const float x = e8[w]; t8 = t8 + x; });
+    int mi = 0; float eb = tv[0];
+    unroll<7>([&](auto mi_) { constexpr int m = decltype(mi_)::value + 1; const float t = tv[m]; if (t < eb) { eb = t; mi = m; } });
+    if (t8 < eb) { eb = t8; mi = 8; }
+    const vf s0 = v_rf16(vf(ec[2] * P.mult[mi])); float s = s0[0]; if (s == 0.f) s = 1.f;
+    simd<uint8_t, 64> sv = block_load<uint8_t, 64>(P.enc_st + ((size_t)tg * A_NM + mi) * 256 + ch * 64);
+    vu f[4]; unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; const simd<uint8_t, 16> b = sv.template select<16, 1>(16 * k); f[k] = vu(b) & 31u; });
+    // pack: 16 fields -> 8 x 10 bits -> 4 x 20 bits -> 2 x 40 bits; 8 values of 40 bits = 10 words
+    uint64_t q[8];
+    unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value;
+      const simd<uint32_t, 8> a = f[k].template select<8, 2>(0), b = f[k].template select<8, 2>(1); simd<uint32_t, 8> p10 = (a << 5) | b;
+      const simd<uint32_t, 4> c = p10.template select<4, 2>(0), d = p10.template select<4, 2>(1); simd<uint32_t, 4> p20 = (c << 10) | d;
+      const uint32_t x0 = p20[0], x1 = p20[1], x2 = p20[2], x3 = p20[3];
+      q[2 * k] = ((uint64_t)x0 << 20) | x1; q[2 * k + 1] = ((uint64_t)x2 << 20) | x3; });
+    simd<uint32_t, 8> w8; simd<uint32_t, 2> w2;
+    w8.template select<1, 1>(0) = (uint32_t)(q[0] >> 8); w8.template select<1, 1>(1) = (uint32_t)((q[0] << 24) | (q[1] >> 16)); w8.template select<1, 1>(2) = (uint32_t)((q[1] << 16) | (q[2] >> 24));
+    w8.template select<1, 1>(3) = (uint32_t)((q[2] << 8) | (q[3] >> 32)); w8.template select<1, 1>(4) = (uint32_t)q[3];
+    w8.template select<1, 1>(5) = (uint32_t)(q[4] >> 8); w8.template select<1, 1>(6) = (uint32_t)((q[4] << 24) | (q[5] >> 16)); w8.template select<1, 1>(7) = (uint32_t)((q[5] << 16) | (q[6] >> 24));
+    w2.template select<1, 1>(0) = (uint32_t)((q[6] << 8) | (q[7] >> 32)); w2.template select<1, 1>(1) = (uint32_t)q[7];
+    uint32_t* wo = (kind ? P.vp : P.kp) + row * 40 + ch * 10; block_store<uint32_t, 8>(wo, w8); block_store<uint32_t, 2>(wo + 8, w2);
+    if (ch == 0) (kind ? P.vps : P.kps)[row] = s;
+    if (!P.mir) return;
+    const int pp = P.pos0 + tok, jl = pp & 15; uint16_t* mo = (uint16_t*)(kind ? P.mv : P.mk) + ((size_t)kvh * P.G + (pp >> 4)) * 4096; const float* T = P.gf + (size_t)g8 * 1280 + 256;
+    unroll<4>([&](auto ki) { constexpr int k = decltype(ki)::value; vu pv = 0u; pv.template select<15, 1>(1) = f[k].template select<15, 1>(0);
+      if constexpr (k > 0) pv.template select<1, 1>(0) = f[k - 1].template select<1, 1>(15);
+      const vu stt = ((pv & 7u) << 5) | f[k]; vu hb = bits(gather<float, 16>(T, stt << 2)) >> 16; const uint32_t c = (uint32_t)(4 * ch + k);
+      if (!kind) { const simd<uint32_t, 8> lo = hb.template select<8, 2>(0), hi = hb.template select<8, 2>(1);
+        scatter<uint32_t, 8>((uint32_t*)mo, simd<uint32_t, 8>(c * 512u + (uint32_t)jl * 4u, 64u), lo | (hi << 16)); }
+      else scatter<uint16_t, 16>(mo, vu((c * 8u + (uint32_t)(jl >> 1)) * 64u + (uint32_t)(jl & 1) * 2u, 4u), simd<uint16_t, 16>(hb)); }); });
+}
 // 4. partial softmax of one (row, NG query heads of one KV head, split).  Keys are decoded once for the NG heads; a tile is
 //    walked chain by chain (4 x 64 values) so that the accumulators of a pass stay in registers; o lives in pacc between tiles.
 template <int NG> inline void attend(sycl::queue& Q, const Args P) {
@@ -877,6 +921,17 @@ inline void attn_forward(Engine& E, Attn& A, int M, int pos0) {
   stamp(3); E.mark("attn: post + trellis encode");
 
   // 3. select the best scale; pack (or store8 of the reconstruction for an unpacked V stream) into the cache
+  static const bool sel5 = !(std::getenv("YX_SEL") && atoi(std::getenv("YX_SEL")) == 0);       // YX_SEL=0: the scalar kernel for every model
+  static const bool sel_chk = std::getenv("YX_SEL") && atoi(std::getenv("YX_SEL")) == 2;       // YX_SEL=2 (test): run the vector kernel, keep its output, run the scalar kernel, compare everything both wrote
+  std::vector<uint32_t> ck_k, ck_v; std::vector<float> ck_ks, ck_vs; std::vector<uint16_t> ck_mk, ck_mv; const int tg0 = pos0 >> 4, tg1 = (pos0 + M - 1) >> 4;
+  auto snap = [&](std::vector<uint32_t>& a, std::vector<uint32_t>& b, std::vector<float>& c, std::vector<float>& d, std::vector<uint16_t>& e, std::vector<uint16_t>& f) { Q.wait();
+    a.resize((size_t)4 * M * 40); b.resize(a.size()); c.resize(4 * M); d.resize(4 * M); e.resize((size_t)4 * (tg1 - tg0 + 1) * 4096); f.resize(e.size());
+    for (int h = 0; h < 4; ++h) { const size_t r = (size_t)h * max_ctx + pos0; Q.memcpy(&a[(size_t)h * M * 40], kp + r * 40, (size_t)M * 160); Q.memcpy(&b[(size_t)h * M * 40], vp + r * 40, (size_t)M * 160);
+      Q.memcpy(&c[h * M], kps + r, M * 4); Q.memcpy(&d[h * M], vps + r, M * 4);
+      if (mir) { Q.memcpy(&e[(size_t)h * (tg1 - tg0 + 1) * 4096], mkp + ((size_t)h * Gn + tg0) * 4096, (size_t)(tg1 - tg0 + 1) * 8192); Q.memcpy(&f[(size_t)h * (tg1 - tg0 + 1) * 4096], mvp + ((size_t)h * Gn + tg0) * 4096, (size_t)(tg1 - tg0 + 1) * 8192); } }
+    Q.wait(); };
+  if (fast && vpk && sel_chk) { ak::select5(Q, P); snap(ck_k, ck_v, ck_ks, ck_vs, ck_mk, ck_mv); }
+  if (fast && vpk && sel5 && !sel_chk) ak::select5(Q, P); else
   Q.parallel_for(sycl::range<1>(M * 8), [=](sycl::id<1> it) { const int tg = it[0], tok = tg >> 3, g8 = tg & 7, kind = g8 >> 2, kvh = g8 & 3;
     const size_t row = (size_t)kvh * max_ctx + pos0 + tok; const float* ec = enc_c + tg * 4; const float* r = enc_r + (size_t)tg * 256;
     const int* mt = gmeta + g8 * 4; const float* G = gf + (size_t)g8 * 1280; float x[256];
@@ -906,6 +961,13 @@ inline void attn_forward(Engine& E, Attn& A, int M, int pos0) {
     vs[row] = sc;
     if (mir) { const int p = pos0 + tok, jl = p & 15; uint16_t* mo = mvp + ((size_t)kvh * Gn + (p >> 4)) * 4096;
       for (int d = 0; d < 256; ++d) mo[(((d >> 4) * 8 + (jl >> 1)) * 16 + (d & 15)) * 2 + (jl & 1)] = (uint16_t)(sycl::bit_cast<uint32_t>(t[d]) >> 16); } });
+  if (fast && vpk && sel_chk) { std::vector<uint32_t> a, b; std::vector<float> c, d; std::vector<uint16_t> e, f; snap(a, b, c, d, e, f); static long nbad = 0, ncall = 0; ++ncall;
+    auto cmp = [&](const char* n, const void* x, const void* y, size_t bytes, size_t unit) { const uint8_t *u = (const uint8_t*)x, *v = (const uint8_t*)y; size_t bad = 0, first = 0;
+      for (size_t i = 0; i < bytes; ++i) if (u[i] != v[i]) { if (!bad) first = i; ++bad; }
+      if (bad) { ++nbad; if (nbad < 12) std::fprintf(stderr, "[select check] %s: %zu bytes differ of %zu, first at element %zu (layer %d, pos0 %d, rows %d)\n", n, bad, bytes, first / unit, A.layer, pos0, M); } };
+    cmp("packed K", ck_k.data(), a.data(), a.size() * 4, 4); cmp("packed V", ck_v.data(), b.data(), b.size() * 4, 4); cmp("K scale", ck_ks.data(), c.data(), c.size() * 4, 4); cmp("V scale", ck_vs.data(), d.data(), d.size() * 4, 4);
+    cmp("K mirror", ck_mk.data(), e.data(), e.size() * 2, 2); cmp("V mirror", ck_mv.data(), f.data(), f.size() * 2, 2);
+    if (ncall % 64 == 0) std::fprintf(stderr, "[select check] %ld launches compared, %ld buffer mismatches\n", ncall, nbad); }
   stamp(4); E.mark("attn: select + mirror write");
 
   // 4. partial softmax of one (row, query head, split)
